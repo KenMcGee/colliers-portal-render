@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Colliers Denver Design Studio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Playfair+Display:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.css" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="logo-mark">C</div>
+      <div class="logo-text"><span class="logo-title">Colliers</span><span class="logo-sub">Denver Design Studio</span></div>
+    </div>
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">Tools</div>
+      <a href="#" class="nav-item active" data-page="dashboard"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
+      <a href="#" class="nav-item" data-page="om-builder"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>OM / BOV Builder</a>
+      <a href="#" class="nav-item" data-page="map-generator"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>Map Generator</a>
+      <a href="#" class="nav-item" data-page="brokers"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Broker Profiles</a>
+      <div class="nav-section-label" style="margin-top:20px;">Account</div>
+      <a href="#" class="nav-item" data-page="settings"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>Settings</a>
+    </nav>
+    <div class="sidebar-footer"><div class="sidebar-footer-text">Colliers International<br>Denver, Colorado</div></div>
+  </aside>
+
+  <main class="main">
+
+    <!-- DASHBOARD -->
+    <div class="page active" id="page-dashboard">
+      <div class="page-header">
+        <div><h1>Dashboard</h1><p class="page-subtitle">Recent projects and quick actions</p></div>
+        <button class="btn-primary" onclick="navigate('om-builder')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New Document</button>
+      </div>
+      <div class="stats-row">
+        <div class="stat-card"><div class="stat-label">Documents created</div><div class="stat-value" id="stat-docs">0</div></div>
+        <div class="stat-card"><div class="stat-label">Saved properties</div><div class="stat-value" id="stat-props">0</div></div>
+        <div class="stat-card"><div class="stat-label">This month</div><div class="stat-value" id="stat-month">0</div></div>
+      </div>
+      <div class="section-header"><h2>Recent Projects</h2></div>
+      <div id="recent-projects-list"><div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>No projects yet.</p><button class="btn-primary" onclick="navigate('om-builder')">Create Document</button></div></div>
+    </div>
+
+    <!-- OM/BOV BUILDER -->
+    <div class="page" id="page-om-builder">
+      <div class="page-header">
+        <div><h1>OM / BOV Builder</h1><p class="page-subtitle">Build professional offering memoranda and broker opinions of value</p></div>
+        <div class="header-actions"><button class="btn-secondary" onclick="saveDraft()">Save Draft</button><button class="btn-primary" onclick="goStep(6)">Review &amp; Generate</button></div>
+      </div>
+      <div class="steps-bar">
+        <div class="step active" data-step="1" onclick="goStep(1)"><div class="step-num">1</div><div class="step-label">Setup</div></div><div class="step-line"></div>
+        <div class="step" data-step="2" onclick="goStep(2)"><div class="step-num">2</div><div class="step-label">Property</div></div><div class="step-line"></div>
+        <div class="step" data-step="3" onclick="goStep(3)"><div class="step-num">3</div><div class="step-label">Financials</div></div><div class="step-line"></div>
+        <div class="step" data-step="4" onclick="goStep(4)"><div class="step-num">4</div><div class="step-label">Photos</div></div><div class="step-line"></div>
+        <div class="step" data-step="5" onclick="goStep(5)"><div class="step-num">5</div><div class="step-label">Design</div></div><div class="step-line"></div>
+        <div class="step" data-step="6" onclick="goStep(6)"><div class="step-num">6</div><div class="step-label">Generate</div></div>
+      </div>
+      <div class="step-panels">
+
+        <!-- STEP 1: Setup -->
+        <div class="step-panel active" id="step-panel-1">
+          <div class="panel-card">
+            <div class="step-upload-block">
+              <div class="sub-header"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Upload reference template — server converts PDF pages to images for accurate analysis</div>
+              <div class="template-mode-toggle">
+                <button class="mode-btn active" id="mode-btn-inspiration" onclick="setTemplateMode('inspiration')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>Style Inspiration</button>
+                <button class="mode-btn" id="mode-btn-copy" onclick="setTemplateMode('copy')"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Exact Replication</button>
+              </div>
+              <div class="mode-description" id="mode-description"><strong>Style Inspiration:</strong> Captures design language, mood, and palette for similar-feeling output.</div>
+              <div class="iupload-row" style="margin-top:10px;">
+                <div class="iupload" onclick="triggerUpload('template')">
+                  <input type="file" id="file-template" style="display:none" accept=".pdf,.pptx,.docx" onchange="handleFileSelect('template',this)" />
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                  <span>Click to upload template (.pdf, .pptx, .docx) — up to 50MB</span>
+                  <div class="ifile-list" id="files-template"></div>
+                </div>
+                <button class="btn-extract" id="btn-analyze-template" style="display:none" onclick="analyzeTemplate()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Analyze with AI</button>
+              </div>
+              <div class="extract-status" id="status-template"></div>
+            </div>
+            <h3>Document Type</h3>
+            <div class="doc-type-grid">
+              <div class="doc-type-card active" data-type="om" onclick="selectDocType('om')"><div class="doc-type-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div><div class="doc-type-name">Offering Memorandum</div><div class="doc-type-desc">Full marketing package — exec summary, property details, financials, market overview.</div><div class="doc-type-sections">8–12 pages</div></div>
+              <div class="doc-type-card" data-type="bov" onclick="selectDocType('bov')"><div class="doc-type-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div class="doc-type-name">Broker Opinion of Value</div><div class="doc-type-desc">Valuation analysis — comparable sales, income approach, pricing recommendation.</div><div class="doc-type-sections">5–8 pages</div></div>
+            </div>
+            <h3 style="margin-top:24px;">Property Type</h3>
+            <div class="prop-type-grid">
+              <div class="prop-type-btn active" data-ptype="industrial" onclick="selectPropType('industrial')">Industrial / Flex</div>
+              <div class="prop-type-btn" data-ptype="office" onclick="selectPropType('office')">Office</div>
+              <div class="prop-type-btn" data-ptype="retail" onclick="selectPropType('retail')">Retail / Mixed-Use</div>
+              <div class="prop-type-btn" data-ptype="multifamily" onclick="selectPropType('multifamily')">Multifamily</div>
+            </div>
+            <h3 style="margin-top:28px;">PDF Page Settings</h3>
+            <p class="field-hint">Default is landscape 11" × 8.5". Page dimensions are preserved exactly when printing to PDF.</p>
+            <div class="page-settings-block">
+              <div class="ps-row"><span class="ps-label">Orientation</span><div class="orientation-toggle"><button class="orient-btn active" id="btn-landscape" onclick="setOrientation('landscape')"><svg width="20" height="14" viewBox="0 0 20 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="18" height="12" rx="1"/></svg>Landscape</button><button class="orient-btn" id="btn-portrait" onclick="setOrientation('portrait')"><svg width="14" height="20" viewBox="0 0 14 20" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="1" width="12" height="18" rx="1"/></svg>Portrait</button></div></div>
+              <div class="ps-row"><span class="ps-label">Preset</span><select id="page-size-preset" onchange="applyPagePreset(this.value)"><option value="11x8.5">11" × 8.5" — Letter Landscape (default)</option><option value="8.5x11">8.5" × 11" — Letter Portrait</option><option value="14x8.5">14" × 8.5" — Legal Landscape</option><option value="8.5x14">8.5" × 14" — Legal Portrait</option><option value="17x11">17" × 11" — Tabloid Landscape</option><option value="custom">Custom...</option></select></div>
+              <div class="ps-row" id="custom-size-row" style="display:none;"><span class="ps-label">Dimensions</span><div style="display:flex;align-items:center;gap:8px;"><input type="number" id="custom-width" placeholder="11" step="0.1" style="width:70px;" oninput="updateCustomSize()" /><span style="color:var(--text-muted);">×</span><input type="number" id="custom-height" placeholder="8.5" step="0.1" style="width:70px;" oninput="updateCustomSize()" /><span style="color:var(--text-muted);font-size:12px;">inches</span></div></div>
+              <div class="ps-row"><span class="ps-label">Preview</span><div style="display:flex;align-items:center;gap:14px;"><div class="page-preview-rect" id="page-preview-rect"></div><span class="page-preview-label" id="page-preview-label">11" × 8.5" landscape</span></div></div>
+            </div>
+            <div class="step-nav"><div></div><button class="btn-primary" onclick="goStep(2)">Next: Property Info →</button></div>
+          </div>
+        </div>
+
+        <!-- STEP 2: Property -->
+        <div class="step-panel" id="step-panel-2">
+          <div class="panel-card">
+            <div class="step-upload-block">
+              <div class="sub-header"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Upload property sheet — AI extracts and fills fields below</div>
+              <div class="iupload-row"><div class="iupload" onclick="triggerUpload('property-doc')"><input type="file" id="file-property-doc" style="display:none" accept=".pdf,.docx,.txt" onchange="handleFileSelect('property-doc',this)" /><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>Upload property info doc</span><div class="ifile-list" id="files-property-doc"></div></div><button class="btn-extract" id="btn-extract-property" style="display:none" onclick="extractProperty()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Extract with AI</button></div>
+              <div class="extract-status" id="status-property"></div>
+            </div>
+            <h3>Property Information</h3>
+            <div class="form-grid">
+              <div class="form-group full"><label>Property Name</label><input type="text" id="prop-name" placeholder="Interlocken Commerce Center" /></div>
+              <div class="form-group full"><label>Street Address</label><input type="text" id="prop-address" placeholder="2655 W. Midway Blvd" /></div>
+              <div class="form-group"><label>City</label><input type="text" id="prop-city" placeholder="Broomfield" /></div>
+              <div class="form-group"><label>State</label><input type="text" id="prop-state" placeholder="CO" /></div>
+              <div class="form-group"><label>ZIP</label><input type="text" id="prop-zip" placeholder="80020" /></div>
+              <div class="form-group"><label>County</label><input type="text" id="prop-county" placeholder="Broomfield County" /></div>
+              <div class="form-group"><label>Year Built</label><input type="number" id="prop-year" placeholder="2005" /></div>
+              <div class="form-group"><label>Building SF</label><input type="number" id="prop-sf" placeholder="45000" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Lot Size (Acres)</label><input type="number" id="prop-acres" placeholder="3.2" step="0.01" /></div>
+              <div class="form-group"><label>Buildings</label><input type="number" id="prop-buildings" placeholder="1" /></div>
+              <div class="form-group"><label>Suites / Units</label><input type="number" id="prop-units" placeholder="4" /></div>
+              <div class="form-group"><label>Zoning</label><input type="text" id="prop-zoning" placeholder="I-2 Light Industrial" /></div>
+              <div class="form-group"><label>Parking</label><input type="number" id="prop-parking" placeholder="120" /></div>
+              <div class="form-group"><label>Clear Height (ft)</label><input type="number" id="prop-clearheight" placeholder="24" /></div>
+              <div class="form-group full"><label>Property Description</label><textarea id="prop-desc" rows="4" placeholder="Construction type, features, condition..."></textarea></div>
+              <div class="form-group full"><label>Investment Highlights (one per line)</label><textarea id="prop-highlights" rows="4" placeholder="100% leased&#10;Recent roof replacement&#10;Below-market rents"></textarea></div>
+            </div>
+            <h3 style="margin-top:20px;">Broker of Record</h3>
+            <div class="form-grid">
+              <div class="form-group"><label>Name</label><input type="text" id="broker-name" placeholder="John Smith" /></div>
+              <div class="form-group"><label>Title</label><input type="text" id="broker-title" placeholder="Senior Vice President" /></div>
+              <div class="form-group"><label>Phone</label><input type="text" id="broker-phone" placeholder="(303) 555-0100" /></div>
+              <div class="form-group"><label>Email</label><input type="email" id="broker-email" placeholder="jsmith@colliers.com" /></div>
+              <div class="form-group"><label>License #</label><input type="text" id="broker-license" placeholder="CO EA.100012345" /></div>
+            </div>
+            <div class="step-nav"><button class="btn-secondary" onclick="goStep(1)">← Back</button><button class="btn-primary" onclick="goStep(3)">Next: Financials →</button></div>
+          </div>
+        </div>
+
+        <!-- STEP 3: Financials -->
+        <div class="step-panel" id="step-panel-3">
+          <div class="panel-card">
+            <div class="step-upload-block">
+              <div class="sub-header"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Upload rent roll, P&amp;L, or T12 — server parses Excel files natively</div>
+              <div class="iupload-row"><div class="iupload" onclick="triggerUpload('financials')"><input type="file" id="file-financials" style="display:none" accept=".xlsx,.xls,.csv,.pdf" multiple onchange="handleFileSelect('financials',this)" /><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Upload .xlsx, .xls, .csv, or .pdf — multiple ok</span><div class="ifile-list" id="files-financials"></div></div><button class="btn-extract" id="btn-extract-financials" style="display:none" onclick="extractFinancials()"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Extract with AI</button></div>
+              <div class="extract-status" id="status-financials"></div>
+            </div>
+            <h3>Pricing &amp; Financial Summary</h3>
+            <div class="form-grid">
+              <div class="form-group"><label>Asking Price ($)</label><input type="number" id="fin-price" placeholder="6500000" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Price Per SF ($)</label><input type="number" id="fin-ppsf" placeholder="144" step="0.01" /></div>
+              <div class="form-group"><label>Gross Potential Rent (Annual)</label><input type="number" id="fin-gpr" placeholder="520000" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Vacancy (%)</label><input type="number" id="fin-vacancy" placeholder="5" step="0.1" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Effective Gross Income</label><input type="number" id="fin-egi" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Operating Expenses</label><input type="number" id="fin-opex" placeholder="104000" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Net Operating Income</label><input type="number" id="fin-noi" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Cap Rate (%)</label><input type="number" id="fin-caprate" step="0.01" oninput="calcFinancials()" /></div>
+              <div class="form-group"><label>Occupancy (%)</label><input type="number" id="fin-occupancy" placeholder="100" step="0.1" /></div>
+              <div class="form-group"><label>WALT (Years)</label><input type="number" id="fin-walt" placeholder="4.2" step="0.1" /></div>
+              <div class="form-group"><label>Debt Service (Annual)</label><input type="number" id="fin-debt" placeholder="" /></div>
+              <div class="form-group"><label>DSCR</label><input type="number" id="fin-dscr" placeholder="" step="0.01" /></div>
+            </div>
+            <div class="calc-results"><div class="calc-result-item"><span class="calc-label">Price / SF</span><span class="calc-value" id="calc-ppsf">—</span></div><div class="calc-result-item"><span class="calc-label">NOI</span><span class="calc-value" id="calc-noi">—</span></div><div class="calc-result-item"><span class="calc-label">Cap Rate</span><span class="calc-value" id="calc-caprate">—</span></div><div class="calc-result-item"><span class="calc-label">GRM</span><span class="calc-value" id="calc-grm">—</span></div></div>
+            <h3 style="margin-top:24px;">Rent Roll</h3>
+            <p class="field-hint">Add tenants manually or use AI extraction above.</p>
+            <div class="rent-roll-table-wrap"><table class="rent-roll-table"><thead><tr><th>Tenant</th><th>Suite</th><th>SF</th><th>Lease Start</th><th>Lease End</th><th>Annual Rent</th><th>$/SF</th><th></th></tr></thead><tbody id="rent-roll-body"><tr class="empty-row"><td colspan="8" style="text-align:center;color:#6b7fa3;padding:20px;">No tenants yet.</td></tr></tbody></table></div>
+            <button class="btn-secondary" style="margin-top:10px;" onclick="addTenantRow()">+ Add Tenant</button>
+            <div class="step-nav"><button class="btn-secondary" onclick="goStep(2)">← Back</button><button class="btn-primary" onclick="goStep(4)">Next: Photos →</button></div>
+          </div>
+        </div>
+
+        <!-- STEP 4: Photos -->
+        <div class="step-panel" id="step-panel-4">
+          <div class="panel-card">
+            <h3>Property Photos</h3>
+            <p class="field-hint">Photos are woven throughout the document. Exterior, interior, aerial all supported.</p>
+            <div class="step-upload-block"><div class="iupload photo-upload" onclick="triggerUpload('photos')"><input type="file" id="file-photos" style="display:none" accept=".jpg,.jpeg,.png,.webp" multiple onchange="handleFileSelect('photos',this)" /><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Click to upload photos (.jpg, .png) — select multiple</span><div id="photo-preview-grid" class="photo-preview-grid"></div></div></div>
+            <h3 style="margin-top:20px;">Marketing Narrative (optional)</h3>
+            <div class="step-upload-block"><div class="iupload-row"><div class="iupload" onclick="triggerUpload('narrative')"><input type="file" id="file-narrative" style="display:none" accept=".pdf,.docx,.txt" onchange="handleFileSelect('narrative',this)" /><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg><span>Upload existing narrative for AI context</span><div class="ifile-list" id="files-narrative"></div></div><button class="btn-extract" id="btn-extract-narrative" style="display:none" onclick="extractProperty('narrative')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Use as context</button></div><div class="extract-status" id="status-narrative"></div></div>
+            <div class="step-nav"><button class="btn-secondary" onclick="goStep(3)">← Back</button><button class="btn-primary" onclick="goStep(5)">Next: Design →</button></div>
+          </div>
+        </div>
+
+        <!-- STEP 5: Design -->
+        <div class="step-panel" id="step-panel-5">
+          <div class="panel-card">
+            <div class="design-ai-notice"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>If you uploaded and analyzed a template in Step 1, these fields are auto-populated. Override any value, or leave blank for AI to choose.</span></div>
+            <h3>Color Palette</h3>
+            <p class="field-hint">Enter hex values or leave blank — AI will choose based on your template or a professional CRE palette.</p>
+            <div class="color-palette-grid">
+              <div class="color-swatch-field"><label>Primary (headers, backgrounds)</label><div class="color-input-row"><input type="color" id="color-primary-picker" value="#001a4d" oninput="syncColorInput('primary')" /><input type="text" id="color-primary" placeholder="#001a4d" maxlength="7" oninput="syncColorPicker('primary')" /><div class="color-preview" id="color-preview-primary" style="background:#001a4d;"></div></div></div>
+              <div class="color-swatch-field"><label>Secondary (accents, buttons)</label><div class="color-input-row"><input type="color" id="color-secondary-picker" value="#0057b8" oninput="syncColorInput('secondary')" /><input type="text" id="color-secondary" placeholder="#0057b8" maxlength="7" oninput="syncColorPicker('secondary')" /><div class="color-preview" id="color-preview-secondary" style="background:#0057b8;"></div></div></div>
+              <div class="color-swatch-field"><label>Accent (highlights, callouts)</label><div class="color-input-row"><input type="color" id="color-accent-picker" value="#c8a96e" oninput="syncColorInput('accent')" /><input type="text" id="color-accent" placeholder="#c8a96e" maxlength="7" oninput="syncColorPicker('accent')" /><div class="color-preview" id="color-preview-accent" style="background:#c8a96e;"></div></div></div>
+              <div class="color-swatch-field"><label>Text</label><div class="color-input-row"><input type="color" id="color-text-picker" value="#1a2332" oninput="syncColorInput('text')" /><input type="text" id="color-text" placeholder="#1a2332" maxlength="7" oninput="syncColorPicker('text')" /><div class="color-preview" id="color-preview-text" style="background:#1a2332;"></div></div></div>
+              <div class="color-swatch-field"><label>Background</label><div class="color-input-row"><input type="color" id="color-bg-picker" value="#ffffff" oninput="syncColorInput('bg')" /><input type="text" id="color-bg" placeholder="#ffffff" maxlength="7" oninput="syncColorPicker('bg')" /><div class="color-preview" id="color-preview-bg" style="background:#ffffff;border:1px solid #ddd;"></div></div></div>
+              <div class="color-swatch-field"><label>Rule / Divider</label><div class="color-input-row"><input type="color" id="color-rule-picker" value="#0057b8" oninput="syncColorInput('rule')" /><input type="text" id="color-rule" placeholder="#0057b8" maxlength="7" oninput="syncColorPicker('rule')" /><div class="color-preview" id="color-preview-rule" style="background:#0057b8;"></div></div></div>
+            </div>
+            <div class="palette-presets"><span class="field-hint" style="margin:0;align-self:center;">Presets:</span><button class="preset-pill" onclick="applyPalettePreset('colliers')">Colliers Blue</button><button class="preset-pill" onclick="applyPalettePreset('dark')">Dark Luxury</button><button class="preset-pill" onclick="applyPalettePreset('earth')">Earth Tones</button><button class="preset-pill" onclick="applyPalettePreset('slate')">Slate &amp; Steel</button><button class="preset-pill" onclick="applyPalettePreset('forest')">Forest Green</button><button class="preset-pill" onclick="applyPalettePreset('clear')">Clear</button></div>
+            <h3 style="margin-top:28px;">Typefaces</h3>
+            <div class="font-grid">
+              <div class="form-group"><label>Heading Font</label><select id="font-heading" onchange="updateFontPreview()"><option value="">— AI choice —</option><option>Playfair Display</option><option>Merriweather</option><option>Lora</option><option>Cormorant Garamond</option><option>Montserrat</option><option>Raleway</option><option>Oswald</option><option>Bebas Neue</option><option>Inter</option><option>DM Sans</option></select></div>
+              <div class="form-group"><label>Body Font</label><select id="font-body" onchange="updateFontPreview()"><option value="">— AI choice —</option><option>Inter</option><option>DM Sans</option><option>Source Sans 3</option><option>Lato</option><option>Open Sans</option><option>Nunito</option><option>Merriweather</option><option>Lora</option><option>Georgia</option></select></div>
+              <div class="form-group"><label>Number / Stat Font</label><select id="font-number" onchange="updateFontPreview()"><option value="">— Same as heading —</option><option>Playfair Display</option><option>Cormorant Garamond</option><option>Montserrat</option><option>Oswald</option><option>Bebas Neue</option><option>Rajdhani</option><option>Barlow</option></select></div>
+            </div>
+            <div class="font-preview-card"><div class="fp-heading" id="fp-heading">Investment Highlights</div><div class="fp-body" id="fp-body">This premier industrial property offers 45,000 SF of institutional-quality space in the highly sought-after Broomfield submarket with 4.2 years WALT.</div><div class="fp-stats" id="fp-stats"><span>$6,500,000</span><span>6.2% Cap</span><span>$144/SF</span></div></div>
+            <h3 style="margin-top:28px;">Layout Style</h3>
+            <div class="layout-options">
+              <div class="layout-card active" data-layout="classic" onclick="selectLayout('classic')"><div class="layout-thumb"><div class="lt-header"></div><div class="lt-body"><div class="lt-col wide"></div><div class="lt-col narrow"></div></div></div><div class="layout-name">Classic</div><div class="layout-desc">Wide content + sidebar</div></div>
+              <div class="layout-card" data-layout="editorial" onclick="selectLayout('editorial')"><div class="layout-thumb"><div class="lt-header tall"></div><div class="lt-body single"><div class="lt-col full"></div></div></div><div class="layout-name">Editorial</div><div class="layout-desc">Bold header, single column</div></div>
+              <div class="layout-card" data-layout="magazine" onclick="selectLayout('magazine')"><div class="layout-thumb"><div class="lt-accent-bar"></div><div class="lt-body"><div class="lt-col" style="flex:1"></div><div class="lt-col" style="flex:1"></div></div></div><div class="layout-name">Magazine</div><div class="layout-desc">Two-column grid</div></div>
+              <div class="layout-card" data-layout="minimal" onclick="selectLayout('minimal')"><div class="layout-thumb"><div class="lt-rule"></div><div class="lt-body single"><div class="lt-col full lite"></div></div></div><div class="layout-name">Minimal</div><div class="layout-desc">Clean, generous whitespace</div></div>
+            </div>
+            <div class="step-nav"><button class="btn-secondary" onclick="goStep(4)">← Back</button><button class="btn-primary" onclick="goStep(6)">Next: Review →</button></div>
+          </div>
+        </div>
+
+        <!-- STEP 6: Review & Generate -->
+        <div class="step-panel" id="step-panel-6">
+          <div class="panel-card">
+            <h3>Review &amp; Generate PDF</h3>
+            <div class="review-grid" id="review-summary"></div>
+            <h3 style="margin-top:20px;">Team Members</h3>
+            <p class="field-hint">Select brokers to include as a team page in the document.</p>
+            <div id="broker-selector" class="broker-selector-list"></div>
+            <h3 style="margin-top:20px;">Sections</h3>
+            <div class="sections-checklist">
+              <label class="check-item"><input type="checkbox" checked data-section="cover" /> Cover Page</label>
+              <label class="check-item"><input type="checkbox" checked data-section="highlights" /> Investment Highlights</label>
+              <label class="check-item"><input type="checkbox" checked data-section="property" /> Property Details</label>
+              <label class="check-item"><input type="checkbox" checked data-section="photos" /> Property Photos</label>
+              <label class="check-item"><input type="checkbox" checked data-section="location" /> Location &amp; Market</label>
+              <label class="check-item"><input type="checkbox" checked data-section="financials" /> Financial Summary</label>
+              <label class="check-item"><input type="checkbox" checked data-section="rentroll" /> Rent Roll</label>
+              <label class="check-item"><input type="checkbox" checked data-section="tenants" /> Tenant Summary</label>
+              <label class="check-item"><input type="checkbox" checked data-section="valuation" /> Valuation / Pricing</label>
+              <label class="check-item"><input type="checkbox" checked data-section="team" /> Team Page</label>
+              <label class="check-item"><input type="checkbox" checked data-section="disclaimer" /> Disclaimer</label>
+            </div>
+            <div id="generate-status" class="generate-status" style="display:none;"></div>
+            <div class="step-nav"><button class="btn-secondary" onclick="goStep(5)">← Back</button><button class="btn-primary btn-generate-final" onclick="generateDocument()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>Generate &amp; Preview PDF</button></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- DOCUMENT PREVIEW -->
+    <div class="page" id="page-preview">
+      <div class="page-header">
+        <div><h1 id="preview-title">Document Preview</h1><p class="page-subtitle" id="preview-subtitle"></p></div>
+        <div class="header-actions"><button class="btn-secondary" onclick="navigate('om-builder')">← Back</button><button class="btn-primary" onclick="window.print()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>Print / Save as PDF</button></div>
+      </div>
+      <div class="print-instructions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>To save as PDF: Print → Destination: Save as PDF → Paper size matches your selection → Disable headers/footers → Save</div>
+      <div id="document-preview-container"></div>
+    </div>
+
+    <!-- MAP GENERATOR -->
+    <div class="page" id="page-map-generator">
+      <div class="page-header">
+        <div><h1>Map Generator</h1><p class="page-subtitle">Create property location, amenity, and comp maps</p></div>
+        <button class="btn-primary" onclick="exportMapImage()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Export Map Image</button>
+      </div>
+      <div class="map-tool-layout">
+        <div class="map-controls-panel">
+          <div class="panel-card" style="margin-bottom:12px;">
+            <h3>Subject Property</h3>
+            <div class="form-group" style="margin-top:10px;"><label>Address</label><input type="text" id="map-address" placeholder="2655 W. Midway Blvd, Broomfield, CO" onkeydown="if(event.key==='Enter')geocodeAddress()" /></div>
+            <button class="btn-primary" style="margin-top:8px;width:100%;" onclick="geocodeAddress()">Set Location</button>
+            <div class="form-grid" style="margin-top:10px;">
+              <div class="form-group"><label>Radius (mi)</label><input type="number" id="map-radius" value="1" step="0.25" min="0.25" max="10" oninput="updateRadius()" /></div>
+              <div class="form-group"><label>Map Style</label><select id="map-style-select" onchange="changeMapStyle(this.value)"><option value="mapbox/streets-v12">Streets</option><option value="mapbox/satellite-streets-v12">Satellite + Streets</option><option value="mapbox/satellite-v9">Satellite</option><option value="mapbox/light-v11">Light</option><option value="mapbox/dark-v11">Dark</option></select></div>
+            </div>
+          </div>
+          <div class="panel-card" style="margin-bottom:12px;">
+            <h3>Amenity Search</h3>
+            <div style="display:flex;gap:8px;margin-bottom:8px;"><input type="text" id="amenity-input" placeholder="restaurants, retail, hotels..." style="flex:1;" onkeydown="if(event.key==='Enter')searchNearby()" /><button class="btn-primary" onclick="searchNearby()">Search</button></div>
+            <div class="amenity-quick-btns">
+              <button class="quick-btn" onclick="quickSearch('restaurant')">Restaurants</button>
+              <button class="quick-btn" onclick="quickSearch('shopping_mall')">Retail</button>
+              <button class="quick-btn" onclick="quickSearch('hotel')">Hotels</button>
+              <button class="quick-btn" onclick="quickSearch('bank')">Banks</button>
+              <button class="quick-btn" onclick="quickSearch('gas_station')">Gas</button>
+              <button class="quick-btn" onclick="quickSearch('grocery_or_supermarket')">Grocery</button>
+              <button class="quick-btn" onclick="quickSearch('hospital')">Medical</button>
+              <button class="quick-btn" onclick="quickSearch('transit_station')">Transit</button>
+            </div>
+            <div id="amenity-results" class="amenity-results" style="margin-top:8px;max-height:180px;overflow-y:auto;"></div>
+          </div>
+          <div class="panel-card" style="margin-bottom:12px;">
+            <h3>Comp Properties</h3>
+            <div id="comp-list" style="margin-bottom:8px;"></div>
+            <button class="btn-secondary" style="width:100%;" onclick="toggleCompForm()">+ Add Comp</button>
+            <div id="comp-form" style="display:none;margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
+              <div class="form-group" style="margin-bottom:6px;"><label>Name</label><input type="text" id="comp-name" placeholder="123 Industrial Way" /></div>
+              <div class="form-group" style="margin-bottom:6px;"><label>Address</label><input type="text" id="comp-address" /></div>
+              <div class="form-grid" style="margin-bottom:6px;">
+                <div class="form-group"><label>Price</label><input type="text" id="comp-price" placeholder="$2.5M" /></div>
+                <div class="form-group"><label>SF</label><input type="text" id="comp-sf" placeholder="20,000" /></div>
+                <div class="form-group"><label>$/SF</label><input type="text" id="comp-ppsf" placeholder="$125" /></div>
+                <div class="form-group"><label>Cap Rate</label><input type="text" id="comp-caprate" placeholder="6.5%" /></div>
+              </div>
+              <div class="form-group" style="margin-bottom:8px;"><label>Type</label><select id="comp-type"><option value="sale">Sale Comp</option><option value="lease">Lease Comp</option><option value="active">Active Listing</option></select></div>
+              <div style="display:flex;gap:8px;"><button class="btn-primary" style="flex:1;" onclick="addComp()">Add to Map</button><button class="btn-secondary" onclick="toggleCompForm()">Cancel</button></div>
+            </div>
+          </div>
+          <div class="panel-card">
+            <h3>Active Pins</h3>
+            <div id="pins-list"><div style="font-size:12px;color:var(--text-muted);">No pins yet.</div></div>
+          </div>
+        </div>
+        <div class="map-display-area">
+          <div id="mapbox-container" style="width:100%;height:100%;"></div>
+          <div id="map-overlay-msg" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:white;padding:18px 22px;border-radius:8px;box-shadow:0 4px 20px rgba(0,0,0,0.12);text-align:center;pointer-events:none;">
+            <div style="font-size:13px;color:var(--text-secondary);">Enter an address above to load the map</div>
+            <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Requires MAPBOX_TOKEN in Railway environment</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- BROKER PROFILES -->
+    <div class="page" id="page-brokers">
+      <div class="page-header">
+        <div><h1>Broker Profiles</h1><p class="page-subtitle">Manage team members for document team pages</p></div>
+        <button class="btn-primary" onclick="showBrokerForm()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>Add Broker</button>
+      </div>
+      <div id="broker-form-card" class="panel-card" style="display:none;margin-bottom:20px;max-width:680px;">
+        <h3 id="broker-form-title">Add Broker Profile</h3>
+        <input type="hidden" id="broker-edit-id" />
+        <div class="form-grid" style="margin-top:14px;">
+          <div class="form-group"><label>Full Name</label><input type="text" id="bf-name" placeholder="John Smith" /></div>
+          <div class="form-group"><label>Title</label><input type="text" id="bf-title" placeholder="Senior Vice President" /></div>
+          <div class="form-group"><label>Phone</label><input type="text" id="bf-phone" placeholder="(303) 555-0100" /></div>
+          <div class="form-group"><label>Email</label><input type="email" id="bf-email" placeholder="jsmith@colliers.com" /></div>
+          <div class="form-group"><label>License #</label><input type="text" id="bf-license" placeholder="CO EA.100012345" /></div>
+          <div class="form-group"><label>Specialization</label><input type="text" id="bf-spec" placeholder="Industrial &amp; Flex" /></div>
+          <div class="form-group full"><label>Bio</label><textarea id="bf-bio" rows="3" placeholder="Brief professional biography..."></textarea></div>
+          <div class="form-group full">
+            <label>Headshot Photo</label>
+            <div class="iupload" onclick="document.getElementById('bf-photo-input').click()" style="max-width:300px;"><input type="file" id="bf-photo-input" style="display:none" accept=".jpg,.jpeg,.png,.webp" onchange="handleBrokerPhoto(this)" /><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Upload headshot</span></div>
+            <div id="bf-photo-preview" style="margin-top:8px;"></div>
+            <input type="hidden" id="bf-photo-data" />
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:14px;"><button class="btn-primary" onclick="saveBroker()">Save Profile</button><button class="btn-secondary" onclick="cancelBrokerForm()">Cancel</button></div>
+      </div>
+      <div id="broker-grid" class="broker-profiles-grid"><div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg><p>No broker profiles yet.</p><button class="btn-primary" onclick="showBrokerForm()">Add First Broker</button></div></div>
+    </div>
+
+    <!-- SETTINGS -->
+    <div class="page" id="page-settings">
+      <div class="page-header"><div><h1>Settings</h1><p class="page-subtitle">Server connection and firm preferences</p></div></div>
+      <div class="panel-card" style="max-width:600px;">
+        <h3>Server Connection</h3>
+        <div style="background:#f0faf4;border:1px solid #b3dfc7;border-radius:8px;padding:14px 16px;font-size:12px;color:#1a5c38;line-height:1.7;margin-top:14px;">
+          <strong>API keys are configured as Railway environment variables.</strong><br>
+          Set in Railway → your service → Variables tab:<br>
+          <code style="background:#e0f5ea;padding:1px 5px;border-radius:3px;font-family:monospace;">ANTHROPIC_API_KEY</code> &nbsp;
+          <code style="background:#e0f5ea;padding:1px 5px;border-radius:3px;font-family:monospace;">MAPBOX_TOKEN</code> &nbsp;
+          <code style="background:#e0f5ea;padding:1px 5px;border-radius:3px;font-family:monospace;">GOOGLE_MAPS_KEY</code> (optional)
+        </div>
+        <div style="margin-top:12px;"><button class="btn-secondary" id="btn-api-test" onclick="testConnection()">Test Connection</button><div id="api-test-result" style="margin-top:8px;font-size:12px;"></div></div>
+        <h3 style="margin-top:24px;">Firm Details</h3>
+        <div class="form-grid" style="margin-top:14px;">
+          <div class="form-group full"><label>Firm Name</label><input type="text" id="settings-firm" value="Colliers International" /></div>
+          <div class="form-group"><label>Office City</label><input type="text" id="settings-city" value="Denver, Colorado" /></div>
+          <div class="form-group"><label>Office Phone</label><input type="text" id="settings-phone" /></div>
+          <div class="form-group full"><label>Disclaimer</label><textarea id="settings-disclaimer" rows="4">The information contained herein has been obtained from sources believed to be reliable. While we do not doubt its accuracy, we have not verified it and make no guarantee, warranty, or representation about it. Colliers International and its affiliates expressly disclaim any and all liability for representations or warranties, expressed or implied, contained in, or for omissions from, this document.</textarea></div>
+        </div>
+        <button class="btn-primary" style="margin-top:14px;" onclick="saveSettings()">Save Settings</button>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script src="https://api.mapbox.com/mapbox-gl-js/v3.3.0/mapbox-gl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
