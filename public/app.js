@@ -1,1107 +1,1809 @@
 /* ============================================================
-   Colliers Denver Design Studio v4 — App Logic
-   Dynamic multi-layout HTML-to-PDF output engine
+   Colliers Denver Design Studio v5 — App Logic
    ============================================================ */
 
-// ============ STATE ============
-const state = {
-  docType: 'om',
-  propType: 'industrial',
-  currentStep: 1,
-  uploadedFiles: {},
-  photoDataURLs: [],
-  projects: JSON.parse(localStorage.getItem('colliers_projects') || '[]'),
-  tenantRows: 0,
-  pageSettings: { widthIn: 11, heightIn: 8.5, orientation: 'landscape' },
+// ── State ────────────────────────────────────────────────────
+const S = {
+  docType: 'om', propType: 'industrial', step: 1,
+  files: {}, photos: [], projects: JSON.parse(localStorage.getItem('cds_projects')||'[]'),
+  brokers: JSON.parse(localStorage.getItem('cds_brokers')||'[]'),
+  selectedBrokers: [], tenantRows: 0,
+  page: { w: 11, h: 8.5, orientation: 'landscape' },
   design: {
-    colors: { primary: '#001a4d', secondary: '#0057b8', accent: '#c8a96e', text: '#1a2332', bg: '#ffffff', rule: '#0057b8' },
-    fonts: { heading: '', body: '', number: '' },
-    layout: 'classic',
-    templateAnalysis: null, // full AI analysis of uploaded template
+    colors: { primary:'#001a4d', secondary:'#0057b8', accent:'#c8a96e', text:'#1a2332', bg:'#ffffff', rule:'#0057b8' },
+    fonts: { heading:'', body:'', number:'' },
+    layout: 'classic', analysis: null, mode: 'inspiration',
   },
-  narrativeContext: '',
-  extractedFinancials: null, // store parsed financials from uploaded file
+  narrative: '', extractedFin: null,
+  map: { instance: null, token: '', subjectLng: null, subjectLat: null, pins: [], comps: [], radiusSource: null },
 };
 
-// ============ NAVIGATION ============
-function navigate(page) {
-  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
-  const t = document.getElementById('page-' + page);
-  if (t) t.classList.add('active');
-  const n = document.querySelector(`[data-page="${page}"]`);
-  if (n) n.classList.add('active');
-  if (page === 'dashboard') refreshDashboard();
-  if (page === 'settings') loadSettings();
-  window.scrollTo(0, 0);
+// ── Helpers ──────────────────────────────────────────────────
+const $  = id => document.getElementById(id);
+const fmtNum = n => { const x=parseFloat(n); return isNaN(x)?String(n||''):x.toLocaleString('en-US',{maximumFractionDigits:0}); };
+const fmtDollar = n => { const x=parseFloat(n); return (!x||isNaN(x))?null:'$'+x.toLocaleString('en-US',{maximumFractionDigits:0}); };
+const spin = () => `<span class="status-spinner"></span>`;
+const toast = msg => { const t=document.createElement('div'); t.className='toast'; t.textContent=msg; document.body.appendChild(t); setTimeout(()=>t.remove(),3500); };
+const hex2rgba = (hex,a) => { try { const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16); return `rgba(${r},${g},${b},${a})`; } catch(e){return hex;} };
+
+async function readText(file) { return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsText(file); }); }
+async function readDataUrl(file) { return new Promise((res,rej)=>{ const r=new FileReader(); r.onload=e=>res(e.target.result); r.onerror=rej; r.readAsDataURL(file); }); }
+
+async function callClaude(body) {
+  const r = await fetch('/api/claude',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const d = await r.json();
+  if(!r.ok) throw new Error(d?.error?.message||d?.error||`HTTP ${r.status}`);
+  return d;
 }
-document.querySelectorAll('.nav-item:not(.coming-soon)').forEach(item => {
-  item.addEventListener('click', e => { e.preventDefault(); navigate(item.dataset.page); });
+
+// ── Navigation ───────────────────────────────────────────────
+function navigate(page) {
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  const t=$('page-'+page); if(t) t.classList.add('active');
+  const n=document.querySelector(`[data-page="${page}"]`); if(n) n.classList.add('active');
+  if(page==='dashboard') refreshDashboard();
+  if(page==='settings') loadSettings();
+  if(page==='brokers') renderBrokerGrid();
+  if(page==='map-generator') initMap();
+  window.scrollTo(0,0);
+}
+document.querySelectorAll('.nav-item:not(.coming-soon)').forEach(item=>{
+  item.addEventListener('click',e=>{e.preventDefault();navigate(item.dataset.page);});
 });
 
-// ============ STEPS ============
+// ── Steps ────────────────────────────────────────────────────
 function goStep(n) {
-  document.querySelectorAll('.step-panel').forEach(p => p.classList.remove('active'));
-  document.querySelectorAll('.step').forEach(s => {
-    const sn = parseInt(s.dataset.step);
-    s.classList.remove('active', 'completed');
-    if (sn === n) s.classList.add('active');
-    if (sn < n) s.classList.add('completed');
+  document.querySelectorAll('.step-panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.step').forEach(s=>{
+    const sn=parseInt(s.dataset.step); s.classList.remove('active','completed');
+    if(sn===n) s.classList.add('active'); if(sn<n) s.classList.add('completed');
   });
-  const panel = document.getElementById('step-panel-' + n);
-  if (panel) panel.classList.add('active');
-  state.currentStep = n;
-  if (n === 6) buildReviewSummary();
-  window.scrollTo(0, 0);
+  const panel=$('step-panel-'+n); if(panel) panel.classList.add('active');
+  S.step=n; if(n===6) buildReview(); window.scrollTo(0,0);
 }
 
-// ============ DOC / PROP TYPE ============
-function selectDocType(t) { state.docType = t; document.querySelectorAll('.doc-type-card').forEach(c => c.classList.toggle('active', c.dataset.type === t)); }
-function selectPropType(t) { state.propType = t; document.querySelectorAll('.prop-type-btn').forEach(b => b.classList.toggle('active', b.dataset.ptype === t)); }
+// ── Doc / prop type ──────────────────────────────────────────
+function selectDocType(t){ S.docType=t; document.querySelectorAll('.doc-type-card').forEach(c=>c.classList.toggle('active',c.dataset.type===t)); }
+function selectPropType(t){ S.propType=t; document.querySelectorAll('.prop-type-btn').forEach(b=>b.classList.toggle('active',b.dataset.ptype===t)); }
 
-// ============ PAGE SETTINGS ============
+// ── Template mode ────────────────────────────────────────────
+function setTemplateMode(mode) {
+  S.design.mode=mode;
+  $('mode-btn-inspiration').classList.toggle('active',mode==='inspiration');
+  $('mode-btn-copy').classList.toggle('active',mode==='copy');
+  const d=$('mode-description');
+  if(d) d.innerHTML = mode==='copy'
+    ? '<strong>Exact Replication:</strong> Server converts each PDF page to images; Claude Vision measures precise layout proportions, colors, and typography.'
+    : '<strong>Style Inspiration:</strong> Captures design language, mood, and palette for similar-feeling output with creative variation.';
+}
+
+// ── Page settings ────────────────────────────────────────────
 function setOrientation(o) {
-  state.pageSettings.orientation = o;
-  document.getElementById('btn-landscape').classList.toggle('active', o === 'landscape');
-  document.getElementById('btn-portrait').classList.toggle('active', o === 'portrait');
-  const { widthIn, heightIn } = state.pageSettings;
-  if (o === 'landscape' && heightIn > widthIn) { state.pageSettings.widthIn = heightIn; state.pageSettings.heightIn = widthIn; }
-  if (o === 'portrait' && widthIn > heightIn) { state.pageSettings.widthIn = heightIn; state.pageSettings.heightIn = widthIn; }
+  S.page.orientation=o;
+  $('btn-landscape').classList.toggle('active',o==='landscape');
+  $('btn-portrait').classList.toggle('active',o==='portrait');
+  const {w,h}=S.page;
+  if(o==='landscape'&&h>w){S.page.w=h;S.page.h=w;}
+  if(o==='portrait'&&w>h){S.page.w=h;S.page.h=w;}
   updatePagePreview();
 }
 function applyPagePreset(val) {
-  const cr = document.getElementById('custom-size-row');
-  if (val === 'custom') { cr.style.display = 'flex'; return; }
-  cr.style.display = 'none';
-  const p = val.split('x').map(Number);
-  state.pageSettings.widthIn = p[0]; state.pageSettings.heightIn = p[1];
-  state.pageSettings.orientation = p[0] >= p[1] ? 'landscape' : 'portrait';
-  document.getElementById('btn-landscape').classList.toggle('active', state.pageSettings.orientation === 'landscape');
-  document.getElementById('btn-portrait').classList.toggle('active', state.pageSettings.orientation === 'portrait');
+  const cr=$('custom-size-row'); if(val==='custom'){cr.style.display='flex';return;} cr.style.display='none';
+  const p=val.split('x').map(Number); S.page.w=p[0]; S.page.h=p[1];
+  S.page.orientation=p[0]>=p[1]?'landscape':'portrait';
+  $('btn-landscape').classList.toggle('active',S.page.orientation==='landscape');
+  $('btn-portrait').classList.toggle('active',S.page.orientation==='portrait');
   updatePagePreview();
 }
 function updateCustomSize() {
-  const w = parseFloat(document.getElementById('custom-width').value) || 11;
-  const h = parseFloat(document.getElementById('custom-height').value) || 8.5;
-  state.pageSettings.widthIn = w; state.pageSettings.heightIn = h;
-  state.pageSettings.orientation = w >= h ? 'landscape' : 'portrait';
-  updatePagePreview();
+  S.page.w=parseFloat($('custom-width').value)||11; S.page.h=parseFloat($('custom-height').value)||8.5;
+  S.page.orientation=S.page.w>=S.page.h?'landscape':'portrait'; updatePagePreview();
 }
 function updatePagePreview() {
-  const { widthIn, heightIn } = state.pageSettings;
-  const r = document.getElementById('page-preview-rect');
-  const l = document.getElementById('page-preview-label');
-  if (!r || !l) return;
-  r.style.width = Math.round(widthIn * 38) + 'px';
-  r.style.height = Math.round(heightIn * 38) + 'px';
-  l.textContent = `${widthIn}" × ${heightIn}" ${state.pageSettings.orientation}`;
+  const r=$('page-preview-rect'),l=$('page-preview-label'); if(!r||!l) return;
+  r.style.width=Math.round(S.page.w*38)+'px'; r.style.height=Math.round(S.page.h*38)+'px';
+  l.textContent=`${S.page.w}" × ${S.page.h}" ${S.page.orientation}`;
 }
 
-// ============ COLOR PALETTE ============
+// ── Color palette ────────────────────────────────────────────
 function syncColorInput(key) {
-  const picker = document.getElementById('color-' + key + '-picker');
-  const text = document.getElementById('color-' + key);
-  const preview = document.getElementById('color-preview-' + key);
-  if (picker && text) text.value = picker.value;
-  if (preview && picker) preview.style.background = picker.value;
-  state.design.colors[key] = picker?.value || state.design.colors[key];
+  const pk=$('color-'+key+'-picker'),tx=$('color-'+key),pv=$('color-preview-'+key);
+  if(pk&&tx) tx.value=pk.value; if(pv&&pk) pv.style.background=pk.value;
+  if(pk) S.design.colors[key]=pk.value;
 }
 function syncColorPicker(key) {
-  const text = document.getElementById('color-' + key);
-  const picker = document.getElementById('color-' + key + '-picker');
-  const preview = document.getElementById('color-preview-' + key);
-  const val = text?.value;
-  if (val && /^#[0-9a-fA-F]{6}$/.test(val)) {
-    if (picker) picker.value = val;
-    if (preview) preview.style.background = val;
-    state.design.colors[key] = val;
-  }
+  const tx=$('color-'+key),pk=$('color-'+key+'-picker'),pv=$('color-preview-'+key),val=tx?.value;
+  if(val&&/^#[0-9a-fA-F]{6}$/.test(val)){if(pk)pk.value=val;if(pv)pv.style.background=val;S.design.colors[key]=val;}
 }
-function setColor(key, val) {
-  state.design.colors[key] = val;
-  const picker = document.getElementById('color-' + key + '-picker');
-  const text = document.getElementById('color-' + key);
-  const preview = document.getElementById('color-preview-' + key);
-  if (picker) picker.value = val;
-  if (text) text.value = val;
-  if (preview) preview.style.background = val;
+function setColor(key,val) {
+  if(!val||!/^#[0-9a-fA-F]{6}$/.test(val)) return;
+  S.design.colors[key]=val;
+  const pk=$('color-'+key+'-picker'),tx=$('color-'+key),pv=$('color-preview-'+key);
+  if(pk)pk.value=val; if(tx)tx.value=val; if(pv)pv.style.background=val;
 }
 function applyPalettePreset(name) {
-  const presets = {
-    colliers: { primary: '#001a4d', secondary: '#0057b8', accent: '#a8d4f5', text: '#0a1628', bg: '#ffffff', rule: '#0057b8' },
-    dark:     { primary: '#0f0f0f', secondary: '#c8a96e', accent: '#e8d4a8', text: '#f0ece0', bg: '#1a1a1a', rule: '#c8a96e' },
-    earth:    { primary: '#3b2a1a', secondary: '#7a4f2e', accent: '#c8a96e', text: '#2a1e10', bg: '#fdf8f0', rule: '#c8a96e' },
-    slate:    { primary: '#1e2d3d', secondary: '#4a7fa5', accent: '#8fb8d4', text: '#1e2d3d', bg: '#f5f8fb', rule: '#4a7fa5' },
-    forest:   { primary: '#1a3a2a', secondary: '#2d6e4e', accent: '#7ab894', text: '#1a3a2a', bg: '#f5faf7', rule: '#2d6e4e' },
-    clear:    { primary: '#001a4d', secondary: '#0057b8', accent: '#c8a96e', text: '#1a2332', bg: '#ffffff', rule: '#0057b8' },
-  };
-  const p = presets[name];
-  if (!p) return;
-  Object.entries(p).forEach(([k, v]) => setColor(k, v));
+  const P={colliers:{primary:'#001a4d',secondary:'#0057b8',accent:'#a8d4f5',text:'#0a1628',bg:'#ffffff',rule:'#0057b8'},dark:{primary:'#0f0f0f',secondary:'#c8a96e',accent:'#e8d4a8',text:'#f0ece0',bg:'#1a1a1a',rule:'#c8a96e'},earth:{primary:'#3b2a1a',secondary:'#7a4f2e',accent:'#c8a96e',text:'#2a1e10',bg:'#fdf8f0',rule:'#c8a96e'},slate:{primary:'#1e2d3d',secondary:'#4a7fa5',accent:'#8fb8d4',text:'#1e2d3d',bg:'#f5f8fb',rule:'#4a7fa5'},forest:{primary:'#1a3a2a',secondary:'#2d6e4e',accent:'#7ab894',text:'#1a3a2a',bg:'#f5faf7',rule:'#2d6e4e'},clear:{primary:'#001a4d',secondary:'#0057b8',accent:'#c8a96e',text:'#1a2332',bg:'#ffffff',rule:'#0057b8'}};
+  const p=P[name]; if(!p) return; Object.entries(p).forEach(([k,v])=>setColor(k,v));
 }
 
-// ============ FONTS ============
-const GOOGLE_FONTS = ['Playfair Display', 'Merriweather', 'Lora', 'Cormorant Garamond', 'Montserrat', 'Raleway', 'Oswald', 'Bebas Neue', 'Inter', 'DM Sans', 'Source Sans 3', 'Lato', 'Open Sans', 'Nunito', 'Rajdhani', 'Barlow'];
-const loadedFonts = new Set();
-function loadGoogleFont(fontName) {
-  if (!fontName || fontName === 'Georgia' || loadedFonts.has(fontName)) return;
-  loadedFonts.add(fontName);
-  const link = document.createElement('link');
-  link.rel = 'stylesheet';
-  link.href = `https://fonts.googleapis.com/css2?family=${fontName.replace(/ /g, '+')}:wght@300;400;500;600;700&display=swap`;
-  document.head.appendChild(link);
+// Pre-built named design templates — full design system in one click
+function applyPresetTemplate(name) {
+  // Clear any previous preset selection
+  document.querySelectorAll('.preset-tmpl').forEach(el=>el.classList.remove('active'));
+  const el=document.querySelector(`[data-preset="${name}"]`);
+  if(el) el.classList.add('active');
+
+  // Clear any previously loaded template analysis so preset takes full effect
+  S.design.analysis=null;
+  S.design.cssOverrides=null;
+
+  const presets = {
+    'colliers-classic': {
+      colors:{primary:'#001a4d',secondary:'#0057b8',accent:'#c8a96e',text:'#0a1628',bg:'#ffffff',rule:'#0057b8'},
+      fonts:{heading:'Playfair Display',body:'Inter',number:'Playfair Display'},
+      layout:'classic',
+      analysis:{
+        accentElements:{usesFullBleedPhotos:true,usesSidebarPanels:true,usesLargeStatCards:true,usesPullQuotes:true,usesDecorativeBars:true,cornerRadiusPx:4,photoStyle:'full-bleed',headerStyle:'dark-overlay',sectionDividerStyle:'colored-rule',statCardStyle:'dark-filled'},
+        coverPage:{photoTreatment:'full-bleed-dark-overlay',photoOpacity:0.55,accentBarThicknessPx:5},
+        typography:{bodyFontSizePt:10.5,headingFontSizePt:22,headingWeight:'500',useAllCapsEyebrows:true,lineHeightBody:1.7},
+        designLanguage:{density:'balanced',formality:'professional',photoEmphasis:'balanced',typographyContrast:'high'},
+        cssVariables:{pagePaddingTopIn:0.45,pagePaddingRightIn:0.5,pagePaddingBottomIn:0.45,pagePaddingLeftIn:0.5,lineHeightBody:1.7,tableRowHeightPt:20},
+        aesthetic:'Classic professional CRE branding with navy, gold accents, and sidebar layout',
+      },
+    },
+    'dark-luxury': {
+      colors:{primary:'#0f0f0f',secondary:'#c8a96e',accent:'#e8d4a8',text:'#f0ece0',bg:'#1a1a1a',rule:'#c8a96e'},
+      fonts:{heading:'Cormorant Garamond',body:'Lato',number:'Cormorant Garamond'},
+      layout:'editorial',
+      analysis:{
+        accentElements:{usesFullBleedPhotos:true,usesSidebarPanels:false,usesLargeStatCards:true,usesPullQuotes:true,usesDecorativeBars:true,cornerRadiusPx:0,photoStyle:'full-bleed',headerStyle:'dark-overlay',sectionDividerStyle:'colored-rule',statCardStyle:'accent-filled'},
+        coverPage:{photoTreatment:'full-bleed-dark-overlay',photoOpacity:0.45,accentBarThicknessPx:4},
+        typography:{bodyFontSizePt:11,headingFontSizePt:26,headingWeight:'400',useAllCapsEyebrows:true,lineHeightBody:1.8},
+        designLanguage:{density:'airy',formality:'luxury',photoEmphasis:'dominant',typographyContrast:'high'},
+        cssVariables:{pagePaddingTopIn:0.5,pagePaddingRightIn:0.55,pagePaddingBottomIn:0.5,pagePaddingLeftIn:0.55,lineHeightBody:1.8,tableRowHeightPt:22},
+        aesthetic:'Luxury dark editorial with gold accents and dramatic photography',
+      },
+    },
+    'clean-modern': {
+      colors:{primary:'#0057b8',secondary:'#0057b8',accent:'#4a90d9',text:'#1a2332',bg:'#ffffff',rule:'#0057b8'},
+      fonts:{heading:'Montserrat',body:'Source Sans 3',number:'Montserrat'},
+      layout:'magazine',
+      analysis:{
+        accentElements:{usesFullBleedPhotos:false,usesSidebarPanels:false,usesLargeStatCards:true,usesPullQuotes:false,usesDecorativeBars:false,cornerRadiusPx:6,photoStyle:'bordered',headerStyle:'colored-band',sectionDividerStyle:'thin-rule',statCardStyle:'light-outlined'},
+        coverPage:{photoTreatment:'split-left-photo',photoOpacity:0.8,accentBarThicknessPx:0},
+        typography:{bodyFontSizePt:10,headingFontSizePt:20,headingWeight:'600',useAllCapsEyebrows:true,lineHeightBody:1.65},
+        designLanguage:{density:'balanced',formality:'modern',photoEmphasis:'balanced',typographyContrast:'medium'},
+        cssVariables:{pagePaddingTopIn:0.4,pagePaddingRightIn:0.45,pagePaddingBottomIn:0.4,pagePaddingLeftIn:0.45,lineHeightBody:1.65,tableRowHeightPt:20},
+        aesthetic:'Clean modern two-column layout with blue accent rules',
+      },
+    },
+    'earth-tones': {
+      colors:{primary:'#3b2a1a',secondary:'#7a4f2e',accent:'#c8a96e',text:'#2a1e10',bg:'#fdf8f0',rule:'#c8a96e'},
+      fonts:{heading:'Merriweather',body:'Lato',number:'Playfair Display'},
+      layout:'classic',
+      analysis:{
+        accentElements:{usesFullBleedPhotos:true,usesSidebarPanels:true,usesLargeStatCards:true,usesPullQuotes:true,usesDecorativeBars:true,cornerRadiusPx:3,photoStyle:'bordered',headerStyle:'dark-overlay',sectionDividerStyle:'colored-rule',statCardStyle:'dark-filled'},
+        coverPage:{photoTreatment:'full-bleed-dark-overlay',photoOpacity:0.5,accentBarThicknessPx:6},
+        typography:{bodyFontSizePt:10.5,headingFontSizePt:22,headingWeight:'700',useAllCapsEyebrows:true,lineHeightBody:1.75},
+        designLanguage:{density:'balanced',formality:'professional',photoEmphasis:'balanced',typographyContrast:'high'},
+        cssVariables:{pagePaddingTopIn:0.45,pagePaddingRightIn:0.5,pagePaddingBottomIn:0.45,pagePaddingLeftIn:0.5,lineHeightBody:1.75,tableRowHeightPt:21},
+        aesthetic:'Warm earth tones with brown and gold — classic CRE with organic warmth',
+      },
+    },
+    'slate-steel': {
+      colors:{primary:'#1e2d3d',secondary:'#4a7fa5',accent:'#8fb8d4',text:'#1e2d3d',bg:'#f5f8fb',rule:'#4a7fa5'},
+      fonts:{heading:'Raleway',body:'Open Sans',number:'Oswald'},
+      layout:'classic',
+      analysis:{
+        accentElements:{usesFullBleedPhotos:true,usesSidebarPanels:true,usesLargeStatCards:true,usesPullQuotes:true,usesDecorativeBars:true,cornerRadiusPx:4,photoStyle:'full-bleed',headerStyle:'dark-overlay',sectionDividerStyle:'colored-band',statCardStyle:'dark-filled'},
+        coverPage:{photoTreatment:'split-right-photo',photoOpacity:0.6,accentBarThicknessPx:5},
+        typography:{bodyFontSizePt:10.5,headingFontSizePt:22,headingWeight:'600',useAllCapsEyebrows:true,lineHeightBody:1.7},
+        designLanguage:{density:'balanced',formality:'professional',photoEmphasis:'balanced',typographyContrast:'medium'},
+        cssVariables:{pagePaddingTopIn:0.42,pagePaddingRightIn:0.48,pagePaddingBottomIn:0.42,pagePaddingLeftIn:0.48,lineHeightBody:1.7,tableRowHeightPt:20},
+        aesthetic:'Cool slate and steel blue — corporate and authoritative with split cover',
+      },
+    },
+    'minimal-white': {
+      colors:{primary:'#1a2332',secondary:'#1a2332',accent:'#0057b8',text:'#1a2332',bg:'#ffffff',rule:'#1a2332'},
+      fonts:{heading:'Inter',body:'Inter',number:'Inter'},
+      layout:'minimal',
+      analysis:{
+        accentElements:{usesFullBleedPhotos:false,usesSidebarPanels:false,usesLargeStatCards:false,usesPullQuotes:false,usesDecorativeBars:false,cornerRadiusPx:0,photoStyle:'inset',headerStyle:'top-band',sectionDividerStyle:'thin-rule',statCardStyle:'transparent-bordered'},
+        coverPage:{photoTreatment:'top-band',photoOpacity:0.7,accentBarThicknessPx:0},
+        typography:{bodyFontSizePt:10.5,headingFontSizePt:20,headingWeight:'400',useAllCapsEyebrows:false,lineHeightBody:1.8},
+        designLanguage:{density:'airy',formality:'minimal',photoEmphasis:'subtle',typographyContrast:'low'},
+        cssVariables:{pagePaddingTopIn:0.5,pagePaddingRightIn:0.6,pagePaddingBottomIn:0.5,pagePaddingLeftIn:0.6,lineHeightBody:1.8,tableRowHeightPt:22},
+        aesthetic:'Minimal white with generous whitespace and thin typographic rules',
+      },
+    },
+  };
+
+  const p=presets[name]; if(!p) return;
+
+  // Apply colors
+  Object.entries(p.colors).forEach(([k,v])=>setColor(k,v));
+
+  // Apply fonts
+  S.design.fonts=p.fonts;
+  const hEl=$('font-heading'), bEl=$('font-body'), nEl=$('font-number');
+  if(hEl) hEl.value=p.fonts.heading||'';
+  if(bEl) bEl.value=p.fonts.body||'';
+  if(nEl) nEl.value=p.fonts.number||'';
+  [p.fonts.heading,p.fonts.body,p.fonts.number].filter(Boolean).forEach(loadFont);
+
+  // Apply layout
+  selectLayout(p.layout);
+
+  // Store analysis so renderer picks up all the design flags
+  S.design.analysis=p.analysis;
+
+  updateFontPreview();
+  toast(`Applied "${p.analysis.aesthetic.split('—')[0].trim()}" template`);
+}
+
+// ── Fonts ─────────────────────────────────────────────────────
+const GF=['Playfair Display','Merriweather','Lora','Cormorant Garamond','Montserrat','Raleway','Oswald','Bebas Neue','Inter','DM Sans','Source Sans 3','Lato','Open Sans','Nunito','Rajdhani','Barlow'];
+const loadedFonts=new Set();
+function loadFont(name) {
+  if(!name||name==='Georgia'||loadedFonts.has(name)) return;
+  loadedFonts.add(name);
+  const l=document.createElement('link'); l.rel='stylesheet';
+  l.href=`https://fonts.googleapis.com/css2?family=${name.replace(/ /g,'+')}:wght@300;400;500;600;700&display=swap`;
+  document.head.appendChild(l);
 }
 function updateFontPreview() {
-  const heading = document.getElementById('font-heading').value;
-  const body = document.getElementById('font-body').value;
-  const number = document.getElementById('font-number').value;
-  state.design.fonts = { heading, body, number };
-  if (heading) loadGoogleFont(heading);
-  if (body) loadGoogleFont(body);
-  if (number) loadGoogleFont(number);
-  const fph = document.getElementById('fp-heading');
-  const fpb = document.getElementById('fp-body');
-  const fps = document.getElementById('fp-stats');
-  if (fph) fph.style.fontFamily = heading ? `'${heading}', serif` : "'Playfair Display', serif";
-  if (fpb) fpb.style.fontFamily = body ? `'${body}', sans-serif` : 'Inter, sans-serif';
-  if (fps) fps.style.fontFamily = (number || heading) ? `'${number || heading}', serif` : "'Playfair Display', serif";
+  const h=$('font-heading').value, b=$('font-body').value, n=$('font-number').value;
+  S.design.fonts={heading:h,body:b,number:n};
+  [h,b,n].filter(Boolean).forEach(loadFont);
+  const fph=$('fp-heading'),fpb=$('fp-body'),fps=$('fp-stats');
+  if(fph) fph.style.fontFamily=h?`'${h}',serif`:"'Playfair Display',serif";
+  if(fpb) fpb.style.fontFamily=b?`'${b}',sans-serif`:'Inter,sans-serif';
+  if(fps) fps.style.fontFamily=(n||h)?`'${n||h}',serif`:"'Playfair Display',serif";
 }
-
-// ============ LAYOUT ============
 function selectLayout(l) {
-  state.design.layout = l;
-  document.querySelectorAll('.layout-card').forEach(c => c.classList.toggle('active', c.dataset.layout === l));
+  S.design.layout=l; document.querySelectorAll('.layout-card').forEach(c=>c.classList.toggle('active',c.dataset.layout===l));
 }
 
-// ============ SHARED API CALL ============
-async function callClaude(body) {
-  const res = await fetch('/api/claude', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+// ── File uploads ─────────────────────────────────────────────
+function triggerUpload(key) { $('file-'+key)?.click(); }
+function handleFileSelect(key,input) {
+  const files=Array.from(input.files); if(!files.length) return;
+  S.files[key]=[...(S.files[key]||[]),...files];
+  const zone=input.closest('.iupload'); if(zone) zone.classList.add('has-files');
+  if(key==='photos'){loadPhotos(files);return;}
+  const listEl=$('files-'+key);
+  if(listEl) files.forEach(f=>{const t=document.createElement('div');t.className='ifile-tag';t.innerHTML=`<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> ${f.name}`;listEl.appendChild(t);});
+  const btnMap={'property-doc':'btn-extract-property','financials':'btn-extract-financials','narrative':'btn-extract-narrative','template':'btn-analyze-template'};
+  const btn=$(btnMap[key]); if(btn) btn.style.display='inline-flex';
+}
+function loadPhotos(files) {
+  const grid=$('photo-preview-grid');
+  files.forEach(f=>{ if(!f.type.startsWith('image/')) return;
+    const r=new FileReader(); r.onload=e=>{S.photos.push(e.target.result);if(grid){const img=document.createElement('img');img.className='photo-thumb';img.src=e.target.result;grid.appendChild(img);}};r.readAsDataURL(f);
   });
-  const data = await res.json();
-  if (!res.ok) {
-    const msg = data?.error?.message || data?.error || `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-  return data;
 }
 
-// ============ TEMPLATE STYLE EXTRACTION ============
-async function extractTemplateStyle() {
-  const files = state.uploadedFiles['template'] || [];
-  if (!files.length) { showToast('Upload a template file first'); return; }
-  const statusEl = document.getElementById('extract-status-template');
-  statusEl.innerHTML = '<span class="status-spinner" style="display:inline-block;width:11px;height:11px;border:2px solid rgba(0,87,184,0.2);border-top-color:#0057b8;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:5px;vertical-align:middle;"></span>Reading file...';
-
-  const file = files[0];
-  const fileSizeMB = (file.size / 1024 / 1024).toFixed(1);
-  const SAFE_BASE64_LIMIT = 3 * 1024 * 1024;
-  let messages;
-
-  if (file.size <= SAFE_BASE64_LIMIT && (file.type === 'application/pdf' || file.name.endsWith('.pdf'))) {
-    try {
-      const base64 = await fileToBase64(file);
-      messages = [{ role: 'user', content: [
-        { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: base64 } },
-        { type: 'text', text: buildStylePrompt() }
-      ]}];
-    } catch (e) { statusEl.textContent = '✗ Could not read file'; return; }
-  } else {
-    let textContent = '';
-    try { textContent = (await readFileAsText(file)).slice(0, 4000); } catch (e) { textContent = `[File: ${file.name}, ${fileSizeMB}MB]`; }
-    messages = [{ role: 'user', content: `${buildStylePrompt()}\n\nTemplate file: ${file.name} (${fileSizeMB}MB)\nExtracted content:\n${textContent}` }];
-  }
-
-  statusEl.innerHTML = statusEl.innerHTML.replace('Reading file...', 'Analyzing design with AI...');
-
+// ── Template analysis (server) ───────────────────────────────
+async function analyzeTemplate() {
+  const files=S.files['template']||[]; if(!files.length){toast('Upload a template file first');return;}
+  const st=$('status-template');
+  const mode=S.design.mode;
+  st.innerHTML=spin()+`Uploading ${files[0].name} (${(files[0].size/1024/1024).toFixed(1)}MB) to server...`;
+  const fd=new FormData(); fd.append('file',files[0]); fd.append('mode',mode);
   try {
-    const data = await callClaude({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages });
-    const text = data.content?.[0]?.text || '';
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-    state.design.templateAnalysis = parsed;
+    st.innerHTML=spin()+'Converting PDF pages to images on server...';
+    const r=await fetch('/api/analyze-template',{method:'POST',body:fd});
+    const d=await r.json(); if(!r.ok) throw new Error(d.error||'Analysis failed');
+    const a=d.analysis;
 
-    if (parsed.colors) Object.entries(parsed.colors).forEach(([k, v]) => { if (/^#[0-9a-fA-F]{6}$/.test(v)) setColor(k, v); });
+    // Store full analysis + CSS overrides
+    S.design.analysis=a;
+    S.design.cssOverrides=d.cssOverrides||null;
 
-    const fontMap = { heading: parsed.fonts?.suggestedHeading, body: parsed.fonts?.suggestedBody };
-    if (fontMap.heading) {
-      const match = GOOGLE_FONTS.find(f => f.toLowerCase().includes(fontMap.heading.toLowerCase().split(' ')[0]));
-      if (match) { document.getElementById('font-heading').value = match; }
+    // Apply colours from analysis
+    if(a.colors) Object.entries(a.colors).forEach(([k,v])=>setColor(k,v));
+
+    // Apply typography
+    if(a.typography){
+      const hF=GF.find(f=>f.toLowerCase().includes((a.typography.suggestedHeading||'').toLowerCase().split(' ')[0]));
+      const bF=GF.find(f=>f.toLowerCase().includes((a.typography.suggestedBody||'').toLowerCase().split(' ')[0]));
+      const nF=GF.find(f=>f.toLowerCase().includes((a.typography.suggestedNumber||'').toLowerCase().split(' ')[0]));
+      if(hF) $('font-heading').value=hF;
+      if(bF) $('font-body').value=bF;
+      if(nF) $('font-number').value=nF;
     }
-    if (fontMap.body) {
-      const match = GOOGLE_FONTS.find(f => f.toLowerCase().includes(fontMap.body.toLowerCase().split(' ')[0]));
-      if (match) { document.getElementById('font-body').value = match; }
+
+    // Map layout structure → our layout selector
+    if(a.pageLayouts?.length){
+      const coverLayout=a.pageLayouts.find(l=>l.pageType==='cover')||a.pageLayouts[0];
+      const ls=coverLayout.layoutStructure||'';
+      const lm={
+        'sidebar-right':'classic','sidebar-left':'classic',
+        'single-column':'editorial','two-column':'magazine',
+        'magazine-grid':'magazine','full-bleed-photo':'editorial',
+        'top-band':'minimal','split-left-photo':'classic','split-right-photo':'classic',
+      };
+      selectLayout(lm[ls]||'classic');
     }
-    if (parsed.layout) selectLayout(parsed.layout);
+
     updateFontPreview();
 
-    statusEl.textContent = `✓ Style extracted — ${parsed.aesthetic || 'Design settings applied'}`;
-    statusEl.className = 'extract-status ok';
-    showToast('Template style applied');
-  } catch (e) {
-    statusEl.textContent = '✗ ' + (e.message || 'Unknown error');
-    statusEl.className = 'extract-status err';
+    const pagesMsg=d.pagesAnalyzed>0?`${d.pagesAnalyzed} pages analyzed`:'Document analyzed';
+    const cssMsg=d.cssOverrides?` · CSS overrides generated`:'';
+    st.textContent=`✓ ${pagesMsg}${cssMsg} — ${a.aesthetic||'Design settings updated'}`;
+    st.className='extract-status ok';
+
+    // Show CSS override summary if copy mode
+    if(mode==='copy'&&d.cssOverrides){
+      const keys=Object.keys(d.cssOverrides).length;
+      toast(`Template replicated — ${keys} CSS variables extracted`);
+    } else {
+      toast('Template analyzed — design settings updated');
+    }
+
+    // Auto-advance to design step so user can review
+    goStep(5);
+
+  } catch(e){
+    st.textContent='✗ '+(e.message||'Analysis failed');
+    st.className='extract-status err';
   }
 }
 
-function buildStylePrompt() {
-  return `Analyze this document's visual design in detail and return ONLY a JSON object. Be specific and extract as much design language as possible.
-
-Return ONLY this JSON, no other text:
-{
-  "colors": {
-    "primary": "#hexcode — dominant dark background/header color",
-    "secondary": "#hexcode — button/link/accent color",
-    "accent": "#hexcode — gold/highlight/callout color",
-    "text": "#hexcode — body text color",
-    "bg": "#hexcode — page background color",
-    "rule": "#hexcode — divider/rule color"
-  },
-  "fonts": {
-    "headingStyle": "serif|sans|display",
-    "bodyStyle": "serif|sans",
-    "suggestedHeading": "closest Google Font name",
-    "suggestedBody": "closest Google Font name"
-  },
-  "layout": "classic|editorial|magazine|minimal",
-  "accentElements": {
-    "usesFullBleedPhotos": true,
-    "usesColoredBands": true,
-    "usesSidebarPanels": true,
-    "usesLargeStatCards": true,
-    "usesPullQuotes": true,
-    "usesDecorativeBars": true,
-    "usesCornerAccents": false,
-    "photoStyle": "full-bleed|inset|bordered|circular",
-    "headerStyle": "dark-overlay|colored-band|minimal|split",
-    "sectionDividerStyle": "rule|colored-band|whitespace|decorative"
-  },
-  "designLanguage": {
-    "density": "dense|balanced|airy",
-    "formality": "luxury|professional|modern|minimal",
-    "photoEmphasis": "dominant|balanced|subtle",
-    "typographyContrast": "high|medium|low"
-  },
-  "aesthetic": "one sentence description of the overall design style"
-}`;
-}
-
-// ============ FILE UPLOADS ============
-function triggerStepUpload(key) { document.getElementById('step-file-' + key)?.click(); }
-
-function handleStepUpload(key, input) {
-  const files = Array.from(input.files);
-  if (!files.length) return;
-  state.uploadedFiles[key] = [...(state.uploadedFiles[key] || []), ...files];
-  const zone = input.closest('.iupload');
-  if (zone) zone.classList.add('has-files');
-  if (key === 'photos') { handlePhotoUploads(files); return; }
-  const listEl = document.getElementById('step-files-' + key);
-  if (listEl) files.forEach(f => { const t = document.createElement('div'); t.className = 'ifile-tag'; t.innerHTML = `<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg> ${f.name}`; listEl.appendChild(t); });
-  const btnMap = { 'property-doc': 'btn-extract-property', 'financials': 'btn-extract-financials', 'narrative': 'btn-extract-narrative', 'template': 'btn-extract-template' };
-  const btn = document.getElementById(btnMap[key]);
-  if (btn) btn.style.display = 'inline-flex';
-}
-
-function handlePhotoUploads(files) {
-  const grid = document.getElementById('photo-preview-grid');
-  files.forEach(f => {
-    if (!f.type.startsWith('image/')) return;
-    const reader = new FileReader();
-    reader.onload = e => {
-      state.photoDataURLs.push(e.target.result);
-      if (grid) { const img = document.createElement('img'); img.className = 'photo-thumb'; img.src = e.target.result; grid.appendChild(img); }
-    };
-    reader.readAsDataURL(f);
-  });
-}
-
-async function fileToBase64(file) {
-  return new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result.split(',')[1]); r.onerror = rej; r.readAsDataURL(file); });
-}
-async function readFileAsText(file) {
-  return new Promise((res, rej) => { const r = new FileReader(); r.onload = e => res(e.target.result); r.onerror = rej; r.readAsText(file); });
-}
-
-// ============ AI EXTRACTION ============
-async function extractFromUpload(type) {
-  const statusEl = document.getElementById('extract-status-' + type);
-  if (statusEl) statusEl.innerHTML = '<span class="status-spinner" style="display:inline-block;width:11px;height:11px;border:2px solid rgba(0,87,184,0.2);border-top-color:#0057b8;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:5px;vertical-align:middle;"></span>Extracting...';
-  const keyMap = { property: 'property-doc', financials: 'financials', narrative: 'narrative' };
-  const files = state.uploadedFiles[keyMap[type]] || [];
-  if (!files.length) { if (statusEl) { statusEl.textContent = 'No file uploaded.'; statusEl.className = 'extract-status'; } return; }
-  let fileContent = '';
-  try { fileContent = await readFileAsText(files[0]); } catch (e) { fileContent = `[File: ${files[0].name}]`; }
-
-  let prompt = '';
-  if (type === 'property') {
-    prompt = `Extract property info from this document. Return ONLY JSON:
-{"propName":"","propAddress":"","propCity":"","propState":"","propZip":"","propCounty":"","propYear":"","propSF":"","propAcres":"","propBuildings":"","propUnits":"","propZoning":"","propParking":"","propClearHeight":"","propDesc":"","propHighlights":"","brokerName":"","brokerTitle":"","brokerPhone":"","brokerEmail":"","brokerLicense":""}
-Document: ${fileContent.slice(0, 6000)}`;
-  } else if (type === 'financials') {
-    prompt = `Extract ALL financial data from this document. Be thorough — capture every financial metric, rent roll entry, and notable figure. Return ONLY JSON:
-{
-  "finPrice":"","finPpsf":"","finGpr":"","finVacancy":"","finEgi":"","finOpex":"","finNoi":"","finCaprate":"","finOccupancy":"","finWalt":"",
-  "finDebtService":"","finDscr":"","finCashOnCash":"","finIrr":"","finEquityMultiple":"",
-  "keyHighlights": ["notable financial fact 1", "notable financial fact 2", "notable financial fact 3"],
-  "rentRoll":[{"tenant":"","suite":"","sf":"","leaseStart":"","leaseEnd":"","annualRent":"","rentPsf":"","leaseType":""}],
-  "expenseBreakdown":[{"item":"","amount":""}],
-  "recentCapex":"",
-  "assumableDebt":"",
-  "additionalNotes":""
-}
-Document: ${fileContent.slice(0, 8000)}`;
-  } else {
-    prompt = `Summarize key marketing points from this document in 3-4 paragraphs for use as CRE narrative context. Document: ${fileContent.slice(0, 6000)}`;
+// ── Property extraction ──────────────────────────────────────
+async function extractProperty(type='property') {
+  const keyMap={property:'property-doc',narrative:'narrative'};
+  const st=$('status-'+type)||$('status-narrative'); if(st) st.innerHTML=spin()+'Extracting...';
+  const files=S.files[keyMap[type]]||[]; if(!files.length){if(st)st.textContent='No file uploaded.';return;}
+  let text=''; try{text=await readText(files[0]);}catch(e){text=`[${files[0].name}]`;}
+  if(type==='narrative'){
+    try{
+      const d=await callClaude({model:'claude-sonnet-4-6',max_tokens:1500,messages:[{role:'user',content:`Summarize this document in 3-4 paragraphs as CRE marketing context:\n${text.slice(0,6000)}`}]});
+      S.narrative=d.content?.[0]?.text||''; if(st){st.textContent='✓ Narrative saved as context';st.className='extract-status ok';}
+    }catch(e){if(st){st.textContent='✗ '+e.message;st.className='extract-status err';}}
+    return;
   }
-
-  try {
-    const data = await callClaude({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: prompt }] });
-    const text = data.content?.[0]?.text || '';
-    if (type === 'narrative') { state.narrativeContext = text; if (statusEl) { statusEl.textContent = '✓ Narrative saved as AI context'; statusEl.className = 'extract-status ok'; } return; }
-    const parsed = JSON.parse(text.replace(/```json|```/g, '').trim());
-
-    if (type === 'property') {
-      const m = { 'prop-name': parsed.propName, 'prop-address': parsed.propAddress, 'prop-city': parsed.propCity, 'prop-state': parsed.propState, 'prop-zip': parsed.propZip, 'prop-county': parsed.propCounty, 'prop-year': parsed.propYear, 'prop-sf': parsed.propSF, 'prop-acres': parsed.propAcres, 'prop-buildings': parsed.propBuildings, 'prop-units': parsed.propUnits, 'prop-zoning': parsed.propZoning, 'prop-parking': parsed.propParking, 'prop-clearheight': parsed.propClearHeight, 'prop-desc': parsed.propDesc, 'prop-highlights': parsed.propHighlights, 'broker-name': parsed.brokerName, 'broker-title': parsed.brokerTitle, 'broker-phone': parsed.brokerPhone, 'broker-email': parsed.brokerEmail, 'broker-license': parsed.brokerLicense };
-      Object.entries(m).forEach(([id, val]) => { const el = document.getElementById(id); if (el && val) el.value = val; });
-    }
-    if (type === 'financials') {
-      state.extractedFinancials = parsed;
-      const m = { 'fin-price': parsed.finPrice, 'fin-ppsf': parsed.finPpsf, 'fin-gpr': parsed.finGpr, 'fin-vacancy': parsed.finVacancy, 'fin-egi': parsed.finEgi, 'fin-opex': parsed.finOpex, 'fin-noi': parsed.finNoi, 'fin-caprate': parsed.finCaprate, 'fin-occupancy': parsed.finOccupancy, 'fin-walt': parsed.finWalt };
-      Object.entries(m).forEach(([id, val]) => { const el = document.getElementById(id); if (el && val) el.value = val; });
-      if (parsed.rentRoll?.length) {
-        const tb = document.getElementById('rent-roll-body'); tb.innerHTML = '';
-        parsed.rentRoll.forEach(r => { state.tenantRows++; const tr = document.createElement('tr'); tr.id = 'tenant-row-' + state.tenantRows; tr.innerHTML = buildTenantRowHTML(state.tenantRows, r); tb.appendChild(tr); });
-      }
-      calcFinancials();
-    }
-    if (statusEl) { statusEl.textContent = type === 'property' ? '✓ Fields populated' : '✓ Financials and rent roll populated'; statusEl.className = 'extract-status ok'; }
-  } catch (e) { if (statusEl) { statusEl.textContent = '✗ ' + (e.message || 'Extraction failed'); statusEl.className = 'extract-status err'; } }
+  const prompt=`Extract property info. Return ONLY valid JSON:\n{"propName":"","propAddress":"","propCity":"","propState":"","propZip":"","propCounty":"","propYear":"","propSF":"","propAcres":"","propBuildings":"","propUnits":"","propZoning":"","propParking":"","propClearHeight":"","propDesc":"","propHighlights":"","brokerName":"","brokerTitle":"","brokerPhone":"","brokerEmail":"","brokerLicense":""}\nDocument:\n${text.slice(0,6000)}`;
+  try{
+    const d=await callClaude({model:'claude-sonnet-4-6',max_tokens:2000,messages:[{role:'user',content:prompt}]});
+    const p=JSON.parse((d.content?.[0]?.text||'{}').replace(/```json|```/g,'').trim());
+    const m={'prop-name':p.propName,'prop-address':p.propAddress,'prop-city':p.propCity,'prop-state':p.propState,'prop-zip':p.propZip,'prop-county':p.propCounty,'prop-year':p.propYear,'prop-sf':p.propSF,'prop-acres':p.propAcres,'prop-buildings':p.propBuildings,'prop-units':p.propUnits,'prop-zoning':p.propZoning,'prop-parking':p.propParking,'prop-clearheight':p.propClearHeight,'prop-desc':p.propDesc,'prop-highlights':p.propHighlights,'broker-name':p.brokerName,'broker-title':p.brokerTitle,'broker-phone':p.brokerPhone,'broker-email':p.brokerEmail,'broker-license':p.brokerLicense};
+    Object.entries(m).forEach(([id,val])=>{const el=$(id);if(el&&val)el.value=val;});
+    if(st){st.textContent='✓ Fields populated';st.className='extract-status ok';}
+  }catch(e){if(st){st.textContent='✗ '+e.message;st.className='extract-status err';}}
 }
 
-// ============ FINANCIALS ============
+// ── Financial extraction ─────────────────────────────────────
+async function extractFinancials() {
+  const st=$('status-financials'); st.innerHTML=spin()+'Parsing file...';
+  const files=S.files['financials']||[]; if(!files.length){st.textContent='No file uploaded.';return;}
+  const file=files[0];
+  if(file.name.match(/\.(xlsx|xls)$/i)){
+    const fd=new FormData(); fd.append('file',file);
+    try{
+      const r=await fetch('/api/parse-xlsx',{method:'POST',body:fd});
+      const d=await r.json(); if(!r.ok) throw new Error(d.error||'Parse failed');
+      applyFinancials(d.data);
+      st.textContent='✓ Financials extracted from spreadsheet'; st.className='extract-status ok';
+    }catch(e){st.textContent='✗ '+e.message;st.className='extract-status err';}
+    return;
+  }
+  // CSV or PDF — read as text
+  let text=''; try{text=await readText(file);}catch(e){text=`[${file.name}]`;}
+  const prompt=`Extract ALL financial data. Return ONLY valid JSON:\n{"finPrice":"","finPpsf":"","finGpr":"","finVacancy":"","finEgi":"","finOpex":"","finNoi":"","finCaprate":"","finOccupancy":"","finWalt":"","finDebtService":"","finDscr":"","finCashOnCash":"","keyHighlights":["","",""],"rentRoll":[{"tenant":"","suite":"","sf":"","leaseStart":"","leaseEnd":"","annualRent":"","rentPsf":"","leaseType":""}],"expenseBreakdown":[{"item":"","amount":""}],"recentCapex":"","additionalNotes":""}\nDocument:\n${text.slice(0,8000)}`;
+  try{
+    const d=await callClaude({model:'claude-sonnet-4-6',max_tokens:3000,messages:[{role:'user',content:prompt}]});
+    const p=JSON.parse((d.content?.[0]?.text||'{}').replace(/```json|```/g,'').trim());
+    applyFinancials(p); st.textContent='✓ Financials extracted'; st.className='extract-status ok';
+  }catch(e){st.textContent='✗ '+e.message;st.className='extract-status err';}
+}
+function applyFinancials(p) {
+  S.extractedFin=p;
+  const m={'fin-price':p.finPrice,'fin-ppsf':p.finPpsf,'fin-gpr':p.finGpr,'fin-vacancy':p.finVacancy,'fin-egi':p.finEgi,'fin-opex':p.finOpex,'fin-noi':p.finNoi,'fin-caprate':p.finCaprate,'fin-occupancy':p.finOccupancy,'fin-walt':p.finWalt,'fin-debt':p.finDebtService,'fin-dscr':p.finDscr};
+  Object.entries(m).forEach(([id,val])=>{const el=$(id);if(el&&val)el.value=val;});
+  if(p.rentRoll?.length){
+    const tb=$('rent-roll-body'); if(tb){tb.innerHTML='';
+      p.rentRoll.forEach(r=>{S.tenantRows++;const tr=document.createElement('tr');tr.id='tr-'+S.tenantRows;tr.innerHTML=tenantRowHTML(S.tenantRows,r);tb.appendChild(tr);});
+    }
+  }
+  calcFinancials();
+}
+
+// ── Financials calc ──────────────────────────────────────────
 function calcFinancials() {
-  const price = parseFloat(document.getElementById('fin-price')?.value) || 0;
-  const sf = parseFloat(document.getElementById('prop-sf')?.value) || 0;
-  const gpr = parseFloat(document.getElementById('fin-gpr')?.value) || 0;
-  const vacancy = parseFloat(document.getElementById('fin-vacancy')?.value) || 0;
-  const opex = parseFloat(document.getElementById('fin-opex')?.value) || 0;
-  const egi = gpr * (1 - vacancy / 100);
-  const noi = egi - opex;
-  const capRate = price > 0 && noi > 0 ? (noi / price) * 100 : 0;
-  const ppsf = sf > 0 && price > 0 ? price / sf : 0;
-  const grm = gpr > 0 && price > 0 ? price / gpr : 0;
-  const trySet = (id, val) => { const el = document.getElementById(id); if (el && !el.value && val > 0) el.value = Number.isInteger(val) ? val : val.toFixed(2); };
-  trySet('fin-egi', egi); trySet('fin-noi', noi); trySet('fin-caprate', capRate); trySet('fin-ppsf', ppsf);
-  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
-  set('calc-ppsf', ppsf > 0 ? '$' + ppsf.toFixed(2) : '—');
-  set('calc-noi', noi > 0 ? '$' + fmtNum(Math.round(noi)) : '—');
-  set('calc-caprate', capRate > 0 ? capRate.toFixed(2) + '%' : '—');
-  set('calc-grm', grm > 0 ? grm.toFixed(2) + 'x' : '—');
+  const price=parseFloat($('fin-price')?.value)||0, sf=parseFloat($('prop-sf')?.value)||0;
+  const gpr=parseFloat($('fin-gpr')?.value)||0, vac=parseFloat($('fin-vacancy')?.value)||0;
+  const opex=parseFloat($('fin-opex')?.value)||0;
+  const egi=gpr*(1-vac/100), noi=egi-opex;
+  const cap=price>0&&noi>0?(noi/price)*100:0, ppsf=sf>0&&price>0?price/sf:0, grm=gpr>0&&price>0?price/gpr:0;
+  const trySet=(id,v)=>{const el=$(id);if(el&&!el.value&&v>0)el.value=Number.isInteger(v)?v:v.toFixed(2);};
+  trySet('fin-egi',egi);trySet('fin-noi',noi);trySet('fin-caprate',cap);trySet('fin-ppsf',ppsf);
+  const set=(id,v)=>{const el=$(id);if(el)el.textContent=v;};
+  set('calc-ppsf',ppsf>0?'$'+ppsf.toFixed(2):'—');
+  set('calc-noi',noi>0?'$'+fmtNum(Math.round(noi)):'—');
+  set('calc-caprate',cap>0?cap.toFixed(2)+'%':'—');
+  set('calc-grm',grm>0?grm.toFixed(2)+'x':'—');
 }
 
-// ============ RENT ROLL ============
-function buildTenantRowHTML(id, row = {}) {
-  return `<td><input type="text" value="${row.tenant||''}" placeholder="Tenant name" /></td><td><input type="text" value="${row.suite||''}" placeholder="101" style="width:60px;" /></td><td><input type="number" value="${row.sf||''}" placeholder="5000" oninput="calcRowRentSF(${id})" /></td><td><input type="date" value="${row.leaseStart||''}" /></td><td><input type="date" value="${row.leaseEnd||''}" /></td><td><input type="number" value="${row.annualRent||''}" placeholder="60000" oninput="calcRowRentSF(${id})" /></td><td><span id="rpsf-${id}" style="color:var(--text-muted);font-size:12px;">—</span></td><td><button class="btn-del-row" onclick="deleteRow(${id})">×</button></td>`;
+// ── Rent roll ────────────────────────────────────────────────
+function tenantRowHTML(id,r={}){
+  return `<td><input type="text" value="${r.tenant||''}" placeholder="Tenant"/></td><td><input type="text" value="${r.suite||''}" placeholder="101" style="width:55px;"/></td><td><input type="number" value="${r.sf||''}" placeholder="5000" oninput="calcRentSF(${id})"/></td><td><input type="date" value="${r.leaseStart||''}"/></td><td><input type="date" value="${r.leaseEnd||''}"/></td><td><input type="number" value="${r.annualRent||''}" placeholder="60000" oninput="calcRentSF(${id})"/></td><td><span id="rpsf-${id}" style="font-size:12px;color:var(--text-muted);">—</span></td><td><button class="btn-del-row" onclick="delRow(${id})">×</button></td>`;
 }
-function addTenantRow() {
-  const tb = document.getElementById('rent-roll-body');
-  const er = tb.querySelector('.empty-row'); if (er) er.remove();
-  const id = ++state.tenantRows; const tr = document.createElement('tr'); tr.id = 'tenant-row-' + id; tr.innerHTML = buildTenantRowHTML(id); tb.appendChild(tr);
+function addTenantRow(){
+  const tb=$('rent-roll-body'); const er=tb.querySelector('.empty-row'); if(er) er.remove();
+  const id=++S.tenantRows; const tr=document.createElement('tr'); tr.id='tr-'+id; tr.innerHTML=tenantRowHTML(id); tb.appendChild(tr);
 }
-function calcRowRentSF(id) {
-  const row = document.getElementById('tenant-row-' + id); if (!row) return;
-  const inputs = row.querySelectorAll('input[type="number"]');
-  const sf = parseFloat(inputs[0]?.value) || 0, rent = parseFloat(inputs[1]?.value) || 0;
-  const el = document.getElementById('rpsf-' + id); if (el) el.textContent = sf > 0 && rent > 0 ? '$' + (rent / sf).toFixed(2) : '—';
+function calcRentSF(id){
+  const row=$('tr-'+id); if(!row) return;
+  const inp=row.querySelectorAll('input[type="number"]');
+  const sf=parseFloat(inp[0]?.value)||0, rent=parseFloat(inp[1]?.value)||0;
+  const el=$('rpsf-'+id); if(el) el.textContent=sf>0&&rent>0?'$'+(rent/sf).toFixed(2):'—';
 }
-function deleteRow(id) {
-  const row = document.getElementById('tenant-row-' + id); if (row) row.remove();
-  const tb = document.getElementById('rent-roll-body');
-  if (!tb.querySelector('tr:not(.empty-row)')) tb.innerHTML = '<tr class="empty-row"><td colspan="8" style="text-align:center;color:#6b7fa3;padding:20px;">No tenants added yet.</td></tr>';
+function delRow(id){
+  const row=$('tr-'+id); if(row) row.remove();
+  const tb=$('rent-roll-body');
+  if(!tb.querySelector('tr:not(.empty-row)')) tb.innerHTML='<tr class="empty-row"><td colspan="8" style="text-align:center;color:#6b7fa3;padding:20px;">No tenants yet.</td></tr>';
 }
-function getRentRollData() {
-  return Array.from(document.querySelectorAll('#rent-roll-body tr:not(.empty-row)')).map(row => {
-    const i = row.querySelectorAll('input');
-    return { tenant: i[0]?.value||'', suite: i[1]?.value||'', sf: i[2]?.value||'', leaseStart: i[3]?.value||'', leaseEnd: i[4]?.value||'', annualRent: i[5]?.value||'' };
+function getRentRoll(){
+  return Array.from(document.querySelectorAll('#rent-roll-body tr:not(.empty-row)')).map(row=>{
+    const i=row.querySelectorAll('input');
+    return {tenant:i[0]?.value||'',suite:i[1]?.value||'',sf:i[2]?.value||'',leaseStart:i[3]?.value||'',leaseEnd:i[4]?.value||'',annualRent:i[5]?.value||''};
   });
 }
 
-// ============ SETTINGS ============
-function saveApiKeyFromSettings() {
-  showToast('API key is managed via Vercel environment variables.');
-}
-function loadSettings() {
-  const s = JSON.parse(localStorage.getItem('colliers_settings') || '{}');
-  if (s.firm) document.getElementById('settings-firm').value = s.firm;
-  if (s.city) document.getElementById('settings-city').value = s.city;
-  if (s.phone) document.getElementById('settings-phone').value = s.phone;
-  if (s.disclaimer) document.getElementById('settings-disclaimer').value = s.disclaimer;
-}
-function saveSettings() {
-  const settings = { firm: document.getElementById('settings-firm')?.value, city: document.getElementById('settings-city')?.value, phone: document.getElementById('settings-phone')?.value, disclaimer: document.getElementById('settings-disclaimer')?.value };
-  localStorage.setItem('colliers_settings', JSON.stringify(settings));
-  showToast('Settings saved');
-}
-
-// ============ API DIAGNOSTIC ============
-async function testAPIConnection() {
-  const btn = document.getElementById('btn-api-test');
-  const result = document.getElementById('api-test-result');
-  btn.disabled = true; btn.textContent = 'Testing...'; result.innerHTML = '';
-  try {
-    const pingRes = await fetch('/api/ping');
-    const pingText = await pingRes.text();
-    let pingData;
-    try { pingData = JSON.parse(pingText); } catch(e) {
-      result.innerHTML = `<span style="color:#cc3333;">✗ Function routing broken — /api/ping returned HTML. Check Vercel Framework Preset (set to "Other") and Output Directory (set to ".").</span>`;
-      btn.disabled = false; btn.textContent = 'Test API Connection'; return;
-    }
-    if (!pingData.ok) { result.innerHTML = `<span style="color:#cc3333;">✗ Ping failed: ${JSON.stringify(pingData)}</span>`; btn.disabled = false; btn.textContent = 'Test API Connection'; return; }
-    if (!pingData.hasApiKey) { result.innerHTML = `<span style="color:#cc3333;">✗ Function routing works ✓ but ANTHROPIC_API_KEY is not set in Vercel environment variables.</span>`; btn.disabled = false; btn.textContent = 'Test API Connection'; return; }
-    result.innerHTML = '<span style="color:#b8720a;">⏳ Routing and key found — testing Claude API...</span>';
-    const claudeRes = await fetch('/api/claude', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 20, messages: [{ role: 'user', content: 'Say "ok".' }] }) });
-    const claudeData = await claudeRes.json();
-    if (claudeRes.status === 401) { result.innerHTML = '<span style="color:#cc3333;">✗ API key invalid or expired.</span>'; }
-    else if (!claudeRes.ok) { result.innerHTML = `<span style="color:#cc3333;">✗ Claude error ${claudeRes.status}: ${claudeData?.error?.message || JSON.stringify(claudeData)}</span>`; }
-    else if (claudeData?.content?.[0]?.text) { result.innerHTML = '<span style="color:#1a7a4a;">✓ Everything working — function routing, API key, and Claude API all confirmed.</span>'; }
-    else { result.innerHTML = `<span style="color:#b8720a;">⚠ Unexpected: ${JSON.stringify(claudeData).slice(0, 200)}</span>`; }
-  } catch (e) { result.innerHTML = `<span style="color:#cc3333;">✗ ${e.message}</span>`; }
-  btn.disabled = false; btn.textContent = 'Test API Connection';
-}
-
-// ============ REVIEW ============
-function buildReviewSummary() {
-  const g = id => document.getElementById(id)?.value || '—';
-  const d = state.design;
-  const sections = [
-    { title: 'Document', items: [['Type', state.docType === 'om' ? 'Offering Memorandum' : 'Broker Opinion of Value'], ['Property Type', state.propType], ['Page Size', `${state.pageSettings.widthIn}" × ${state.pageSettings.heightIn}"`]] },
-    { title: 'Property', items: [['Name', g('prop-name')], ['Address', `${g('prop-address')}, ${g('prop-city')}, ${g('prop-state')}`], ['SF', g('prop-sf') !== '—' ? fmtNum(g('prop-sf')) + ' SF' : '—'], ['Year Built', g('prop-year')]] },
-    { title: 'Financials', items: [['Price', g('fin-price') !== '—' ? '$' + fmtNum(g('fin-price')) : '—'], ['NOI', g('fin-noi') !== '—' ? '$' + fmtNum(g('fin-noi')) : '—'], ['Cap Rate', g('fin-caprate') !== '—' ? g('fin-caprate') + '%' : '—'], ['Occupancy', g('fin-occupancy') !== '—' ? g('fin-occupancy') + '%' : '—']] },
-    { title: 'Design', items: [['Layout', d.layout], ['Template analyzed', d.templateAnalysis ? '✓ Yes' : 'No'], ['Heading Font', d.fonts.heading || 'AI choice'], ['Primary Color', d.colors.primary]] },
-    { title: 'Files', items: [['Property doc', (state.uploadedFiles['property-doc']?.length || 0) + ' file(s)'], ['Financials', (state.uploadedFiles['financials']?.length || 0) + ' file(s)'], ['Photos', state.photoDataURLs.length + ' photo(s)'], ['Template', (state.uploadedFiles['template']?.length || 0) + ' file(s)']] },
+// ── Review ───────────────────────────────────────────────────
+function buildReview(){
+  const g=id=>$(id)?.value||'—';
+  const sections=[
+    {title:'Document',items:[['Type',S.docType==='om'?'Offering Memorandum':'Broker Opinion of Value'],['Property Type',S.propType],['Page Size',`${S.page.w}" × ${S.page.h}"`]]},
+    {title:'Property',items:[['Name',g('prop-name')],['Address',`${g('prop-address')}, ${g('prop-city')}, ${g('prop-state')}`],['SF',g('prop-sf')!=='—'?fmtNum(g('prop-sf'))+' SF':'—'],['Year',g('prop-year')]]},
+    {title:'Financials',items:[['Price',g('fin-price')!=='—'?'$'+fmtNum(g('fin-price')):'—'],['NOI',g('fin-noi')!=='—'?'$'+fmtNum(g('fin-noi')):'—'],['Cap Rate',g('fin-caprate')!=='—'?g('fin-caprate')+'%':'—'],['Occupancy',g('fin-occupancy')!=='—'?g('fin-occupancy')+'%':'—']]},
+    {title:'Design',items:[
+      ['Layout',S.design.layout],
+      ['Template',S.design.analysis?(S.design.cssOverrides?`✓ Copy mode (${Object.keys(S.design.cssOverrides).length} CSS vars)`:'✓ Analyzed'):'—'],
+      ['Preset',document.querySelector('.preset-tmpl.active')?.dataset.preset||'—'],
+      ['Primary',S.design.colors.primary],
+      ['Heading Font',S.design.fonts.heading||'AI choice'],
+    ]},
+    {title:'Files',items:[['Photos',S.photos.length+' photo(s)'],['Financial',((S.files['financials']||[]).length)+' file(s)'],['Template',((S.files['template']||[]).length)+' file(s)']]},
   ];
-  document.getElementById('review-summary').innerHTML = sections.map(s => `<div class="review-section"><div class="review-section-title">${s.title}</div>${s.items.map(([l,v]) => `<div class="review-item"><span class="review-item-label">${l}</span><span class="review-item-value">${v}</span></div>`).join('')}</div>`).join('');
-}
+  $('review-summary').innerHTML=sections.map(s=>`<div class="review-section"><div class="review-section-title">${s.title}</div>${s.items.map(([l,v])=>`<div class="review-item"><span class="review-item-label">${l}</span><span class="review-item-value">${v}</span></div>`).join('')}</div>`).join('');
 
-// ============ SAVE DRAFT ============
-function saveDraft() {
-  const g = id => document.getElementById(id)?.value || '';
-  const d = { id: Date.now(), docType: state.docType, propType: state.propType, name: g('prop-name') || 'Untitled', address: `${g('prop-address')}, ${g('prop-city')}, ${g('prop-state')}`, price: g('fin-price'), noi: g('fin-noi'), capRate: g('fin-caprate'), sf: g('prop-sf'), createdAt: new Date().toLocaleDateString(), status: 'draft' };
-  state.projects = [d, ...state.projects.filter(p => p.name !== d.name)];
-  localStorage.setItem('colliers_projects', JSON.stringify(state.projects));
-  showToast('Draft saved');
-}
-
-// ============ HELPERS ============
-function fmtNum(n) { const num = parseFloat(n); if (isNaN(num)) return String(n||''); return num.toLocaleString('en-US', { maximumFractionDigits: 0 }); }
-function fmtDollar(n) { const num = parseFloat(n); if (isNaN(num) || !num) return null; return '$' + num.toLocaleString('en-US', { maximumFractionDigits: 0 }); }
-function showToast(msg) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 3500); }
-
-// ============ DASHBOARD ============
-function refreshDashboard() {
-  const projects = JSON.parse(localStorage.getItem('colliers_projects') || '[]');
-  state.projects = projects;
-  document.getElementById('stat-docs').textContent = projects.filter(p => p.status === 'complete').length;
-  document.getElementById('stat-props').textContent = projects.length;
-  const thisMonth = new Date().toLocaleDateString('en-US', { month: 'numeric', year: 'numeric' });
-  document.getElementById('stat-month').textContent = projects.filter(p => { try { return new Date(p.createdAt).toLocaleDateString('en-US', { month: 'numeric', year: 'numeric' }) === thisMonth; } catch(e) { return false; } }).length;
-  const container = document.getElementById('recent-projects-list');
-  if (!projects.length) { container.innerHTML = `<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>No projects yet.</p><button class="btn-primary" onclick="navigate('om-builder')">Create Document</button></div>`; return; }
-  container.innerHTML = `<table class="projects-table"><thead><tr><th>Property</th><th>Type</th><th>Price</th><th>Cap Rate</th><th>SF</th><th>Date</th><th>Status</th></tr></thead><tbody>${projects.map(p => `<tr><td><div style="font-weight:500;">${p.name}</div><div style="font-size:11px;color:var(--text-muted);">${p.address}</div></td><td><span class="doc-type-badge ${p.docType}">${p.docType==='om'?'OM':'BOV'}</span></td><td>${p.price?'$'+fmtNum(p.price):'—'}</td><td>${p.capRate?p.capRate+'%':'—'}</td><td>${p.sf?fmtNum(p.sf)+' SF':'—'}</td><td>${p.createdAt}</td><td><span style="font-size:11px;color:${p.status==='complete'?'#1a7a4a':'#b8720a'};font-weight:500;">${p.status}</span></td></tr>`).join('')}</tbody></table>`;
-}
-
-// ============ INIT ============
-function init() { updatePagePreview(); refreshDashboard(); }
-init();
-
-// ============ GENERATE DOCUMENT ============
-async function generateDocument() {
-  const g = id => document.getElementById(id)?.value || '';
-  const settings = JSON.parse(localStorage.getItem('colliers_settings') || '{}');
-  const disclaimer = settings.disclaimer || 'The information contained herein has been obtained from sources believed to be reliable. Colliers International makes no guarantee, warranty, or representation about it.';
-  const firmName = settings.firm || 'Colliers International';
-  const officeCity = settings.city || 'Denver, Colorado';
-  const docTypeLabel = state.docType === 'om' ? 'Offering Memorandum' : 'Broker Opinion of Value';
-
-  const prop = {
-    name: g('prop-name') || 'Subject Property', address: g('prop-address'), city: g('prop-city'),
-    state: g('prop-state'), zip: g('prop-zip'), county: g('prop-county'), yearBuilt: g('prop-year'),
-    sf: g('prop-sf'), acres: g('prop-acres'), buildings: g('prop-buildings'), units: g('prop-units'),
-    zoning: g('prop-zoning'), parking: g('prop-parking'), clearHeight: g('prop-clearheight'),
-    desc: g('prop-desc'), highlights: g('prop-highlights'),
-  };
-  const fin = {
-    price: g('fin-price'), ppsf: g('fin-ppsf'), gpr: g('fin-gpr'), vacancy: g('fin-vacancy'),
-    egi: g('fin-egi'), opex: g('fin-opex'), noi: g('fin-noi'), capRate: g('fin-caprate'),
-    occupancy: g('fin-occupancy'), walt: g('fin-walt'),
-    ...(state.extractedFinancials || {}),
-  };
-  const broker = { name: g('broker-name'), title: g('broker-title'), phone: g('broker-phone'), email: g('broker-email'), license: g('broker-license') };
-  const rentRoll = getRentRollData();
-  const selectedSections = Array.from(document.querySelectorAll('.sections-checklist input:checked')).map(i => i.dataset.section);
-
-  const statusEl = document.getElementById('generate-status');
-  statusEl.style.display = 'block';
-  statusEl.innerHTML = '<span class="status-spinner"></span> Generating AI content...';
-
-  let ai = {};
-  let resolvedFonts = { heading: state.design.fonts.heading || 'Playfair Display', body: state.design.fonts.body || 'Inter', number: state.design.fonts.number || state.design.fonts.heading || 'Playfair Display' };
-  const ta = state.design.templateAnalysis;
-
-  try {
-    // Pick fonts if not chosen
-    if (!state.design.fonts.heading || !state.design.fonts.body) {
-      const styleContext = ta ? `The template uses a ${ta.designLanguage?.formality || 'professional'} style with ${ta.designLanguage?.density || 'balanced'} density and ${ta.designLanguage?.typographyContrast || 'medium'} typography contrast. Aesthetic: ${ta.aesthetic || 'professional CRE'}. Layout: ${ta.layout}.` : '';
-      const fontPrompt = `You are a CRE design director. Pick professional Google Fonts for a ${docTypeLabel} for a ${state.propType} property. ${styleContext} Primary color is ${state.design.colors.primary}. Return ONLY JSON: {"heading":"font name","body":"font name","number":"font name"} Choose from: Playfair Display, Merriweather, Lora, Cormorant Garamond, Montserrat, Raleway, Oswald, Inter, DM Sans, Source Sans 3, Lato, Bebas Neue, Barlow`;
-      try {
-        const fd = await callClaude({ model: 'claude-sonnet-4-6', max_tokens: 200, messages: [{ role: 'user', content: fontPrompt }] });
-        const fp = JSON.parse((fd.content?.[0]?.text || '{}').replace(/```json|```/g, '').trim());
-        if (fp.heading) resolvedFonts.heading = state.design.fonts.heading || fp.heading;
-        if (fp.body) resolvedFonts.body = state.design.fonts.body || fp.body;
-        if (fp.number) resolvedFonts.number = state.design.fonts.number || fp.number;
-      } catch(e) {}
-    }
-
-    statusEl.innerHTML = '<span class="status-spinner"></span> Writing narratives and financial analysis...';
-    const narrativePrompt = buildNarrativePrompt(prop, fin, broker, rentRoll, docTypeLabel, ta);
-    const nd = await callClaude({ model: 'claude-sonnet-4-6', max_tokens: 6000, messages: [{ role: 'user', content: narrativePrompt }] });
-    try { ai = JSON.parse((nd.content?.[0]?.text || '{}').replace(/```json|```/g, '').trim()); } catch(e) { ai = {}; }
-  } catch (e) {
-    statusEl.innerHTML = `<span style="color:#f5a623;">⚠ AI unavailable (${e.message}) — building from entered data.</span>`;
-    await new Promise(r => setTimeout(r, 2000));
+  // Broker selector
+  const bs=$('broker-selector');
+  if(bs){
+    if(!S.brokers.length){bs.innerHTML='<div style="font-size:12px;color:var(--text-muted);">No brokers saved. <a href="#" onclick="navigate(\'brokers\');return false;" style="color:var(--colliers-mid);">Add brokers</a> first.</div>';}
+    else{bs.innerHTML=S.brokers.map(b=>`<div class="broker-selector-item${S.selectedBrokers.includes(b.id)?' selected':''}" onclick="toggleBroker('${b.id}')"><div class="broker-sel-avatar">${b.photo?`<img src="${b.photo}" style="width:100%;height:100%;border-radius:50%;object-fit:cover;">`:(b.name||'?')[0]}</div><span class="broker-sel-name">${b.name}</span></div>`).join('');}
   }
-
-  [resolvedFonts.heading, resolvedFonts.body, resolvedFonts.number].filter(Boolean).forEach(loadGoogleFont);
-  await new Promise(r => setTimeout(r, 900));
-
-  statusEl.innerHTML = '<span class="status-spinner"></span> Building document pages...';
-  await new Promise(r => setTimeout(r, 200));
-
-  const html = buildDocumentHTML(prop, fin, broker, rentRoll, ai, selectedSections, disclaimer, docTypeLabel, firmName, officeCity, resolvedFonts, state.design);
-
-  navigate('preview');
-  document.getElementById('preview-title').textContent = `${prop.name} — ${docTypeLabel}`;
-  document.getElementById('preview-subtitle').textContent = `${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}`;
-  document.getElementById('document-preview-container').innerHTML = html;
-  injectPrintCSS();
-  statusEl.style.display = 'none';
-
-  const project = { id: Date.now(), docType: state.docType, propType: state.propType, name: prop.name, address: `${prop.address}, ${prop.city}, ${prop.state}`, price: fin.price, noi: fin.noi, capRate: fin.capRate, sf: prop.sf, createdAt: new Date().toLocaleDateString(), status: 'complete' };
-  state.projects = [project, ...state.projects];
-  localStorage.setItem('colliers_projects', JSON.stringify(state.projects));
-  showToast('Document ready — Print / Save as PDF to export');
+}
+function toggleBroker(id){
+  if(S.selectedBrokers.includes(id)) S.selectedBrokers=S.selectedBrokers.filter(x=>x!==id);
+  else S.selectedBrokers.push(id);
+  document.querySelectorAll('.broker-selector-item').forEach(el=>{
+    const elId=el.getAttribute('onclick')?.match(/'([^']+)'/)?.[1];
+    if(elId) el.classList.toggle('selected',S.selectedBrokers.includes(elId));
+  });
 }
 
-function injectPrintCSS() {
-  const existing = document.getElementById('print-page-css');
-  if (existing) existing.remove();
-  const { widthIn, heightIn } = state.pageSettings;
-  const style = document.createElement('style');
-  style.id = 'print-page-css';
-  style.textContent = `@media print { @page { size: ${widthIn}in ${heightIn}in; margin: 0; } .doc-page { width: ${widthIn}in !important; height: ${heightIn}in !important; min-height: ${heightIn}in !important; } }`;
-  document.head.appendChild(style);
+// ── Save draft ───────────────────────────────────────────────
+function saveDraft(){
+  const g=id=>$(id)?.value||'';
+  const d={id:Date.now(),docType:S.docType,propType:S.propType,name:g('prop-name')||'Untitled',address:`${g('prop-address')}, ${g('prop-city')}, ${g('prop-state')}`,price:g('fin-price'),noi:g('fin-noi'),capRate:g('fin-caprate'),sf:g('prop-sf'),createdAt:new Date().toLocaleDateString(),status:'draft'};
+  S.projects=[d,...S.projects.filter(p=>p.name!==d.name)];
+  localStorage.setItem('cds_projects',JSON.stringify(S.projects)); toast('Draft saved');
 }
 
-function buildNarrativePrompt(prop, fin, broker, rentRoll, docTypeLabel, ta) {
-  const styleCtx = ta ? `\n\nDesign context from template: ${ta.aesthetic}. Formality: ${ta.designLanguage?.formality}. Photo emphasis: ${ta.designLanguage?.photoEmphasis}. Adapt writing tone accordingly.` : '';
-  return `You are a senior CRE broker at Colliers International writing a ${docTypeLabel} for a ${state.propType} property.
-${state.narrativeContext ? 'Existing narrative context:\n' + state.narrativeContext + '\n\n' : ''}${styleCtx}
+// ── Generate document ────────────────────────────────────────
+async function generateDocument(){
+  const g=id=>$(id)?.value||'';
+  const settings=JSON.parse(localStorage.getItem('cds_settings')||'{}');
+  const disclaimer=settings.disclaimer||'The information contained herein has been obtained from sources believed to be reliable. Colliers International makes no guarantee, warranty, or representation about it.';
+  const firm=settings.firm||'Colliers International'; const city=settings.city||'Denver, Colorado';
+  const docLabel=S.docType==='om'?'Offering Memorandum':'Broker Opinion of Value';
 
+  const prop={name:g('prop-name')||'Subject Property',address:g('prop-address'),city:g('prop-city'),state:g('prop-state'),zip:g('prop-zip'),county:g('prop-county'),yearBuilt:g('prop-year'),sf:g('prop-sf'),acres:g('prop-acres'),buildings:g('prop-buildings'),units:g('prop-units'),zoning:g('prop-zoning'),parking:g('prop-parking'),clearHeight:g('prop-clearheight'),desc:g('prop-desc'),highlights:g('prop-highlights')};
+  const fin={price:g('fin-price'),ppsf:g('fin-ppsf'),gpr:g('fin-gpr'),vacancy:g('fin-vacancy'),egi:g('fin-egi'),opex:g('fin-opex'),noi:g('fin-noi'),capRate:g('fin-caprate'),occupancy:g('fin-occupancy'),walt:g('fin-walt'),debtService:g('fin-debt'),dscr:g('fin-dscr'),...(S.extractedFin||{})};
+  const broker={name:g('broker-name'),title:g('broker-title'),phone:g('broker-phone'),email:g('broker-email'),license:g('broker-license')};
+  const rentRoll=getRentRoll();
+  const sections=Array.from(document.querySelectorAll('.sections-checklist input:checked')).map(i=>i.dataset.section);
+  const selBrokers=S.brokers.filter(b=>S.selectedBrokers.includes(b.id));
+
+  const st=$('generate-status'); st.style.display='block'; st.innerHTML=spin()+'Generating AI content...';
+
+  let ai={};
+  let fonts={heading:S.design.fonts.heading||'Playfair Display',body:S.design.fonts.body||'Inter',number:S.design.fonts.number||S.design.fonts.heading||'Playfair Display'};
+  const ta=S.design.analysis;
+
+  try{
+    if(!S.design.fonts.heading||!S.design.fonts.body){
+      const ctx=ta?`Template style: ${ta.aesthetic}. Formality: ${ta.designLanguage?.formality}. Primary color: ${S.design.colors.primary}.`:`Primary color: ${S.design.colors.primary}. Layout: ${S.design.layout}.`;
+      const fd=await callClaude({model:'claude-sonnet-4-6',max_tokens:150,messages:[{role:'user',content:`Pick Google Fonts for a ${docLabel} (${S.propType} property). ${ctx} Return ONLY JSON: {"heading":"","body":"","number":""} Choose from: ${GF.join(', ')}`}]});
+      try{const fp=JSON.parse((fd.content?.[0]?.text||'{}').replace(/```json|```/g,'').trim());if(fp.heading)fonts.heading=S.design.fonts.heading||fp.heading;if(fp.body)fonts.body=S.design.fonts.body||fp.body;if(fp.number)fonts.number=S.design.fonts.number||fp.number;}catch(e){}
+    }
+    st.innerHTML=spin()+'Writing narratives...';
+    const narrativePrompt=`You are a senior CRE broker at ${firm} writing a ${docLabel} for a ${S.propType} property.
+${S.narrative?'Existing narrative:\n'+S.narrative+'\n\n':''}
+${ta?'Design context from template: '+ta.aesthetic+'. Formality: '+ta.designLanguage?.formality+'.':''}
 PROPERTY: ${prop.name}, ${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}
-${prop.sf ? fmtNum(prop.sf) + ' SF' : ''} ${state.propType}, Built ${prop.yearBuilt||'N/A'}, Zoning: ${prop.zoning||'N/A'}, Clear Height: ${prop.clearHeight||'N/A'} ft
-Description: ${prop.desc || 'N/A'}
-Highlights: ${prop.highlights || 'N/A'}
+${prop.sf?fmtNum(prop.sf)+' SF, ':''} Built ${prop.yearBuilt||'N/A'}, Zoning: ${prop.zoning||'N/A'}, Clear Height: ${prop.clearHeight||'N/A'} ft
+Description: ${prop.desc||'N/A'}
+Highlights: ${prop.highlights||'N/A'}
+FINANCIALS: Price $${fmtNum(fin.price)||'N/A'}, NOI $${fmtNum(fin.noi)||'N/A'}, Cap ${fin.capRate||'N/A'}%, Occupancy ${fin.occupancy||'N/A'}%, WALT ${fin.walt||'N/A'} yrs
+GPR: $${fmtNum(fin.gpr)||'N/A'}, Vacancy: ${fin.vacancy||'N/A'}%, OpEx: $${fmtNum(fin.opex)||'N/A'}
+${fin.debtService?'Debt Service: $'+fmtNum(fin.debtService):''}${fin.dscr?' DSCR: '+fin.dscr:''}
+${S.extractedFin?.recentCapex?'Recent CapEx: '+S.extractedFin.recentCapex:''}
+${S.extractedFin?.additionalNotes?'Notes: '+S.extractedFin.additionalNotes:''}
+RENT ROLL: ${rentRoll.length?JSON.stringify(rentRoll):'Not provided'}
+Return ONLY valid JSON:
+{"executiveSummary":"2-3 paragraphs leading with strongest financial fact","propertyDescription":"2-3 paragraphs with specific physical details","locationOverview":"2 paragraphs specific to ${prop.city} ${prop.state} market","investmentHighlights":["specific highlight with numbers","highlight 2","highlight 3","highlight 4","highlight 5"],"tenantSummary":"1-2 paragraphs on tenancy","valuationNarrative":"2 paragraphs with pricing rationale","financialHighlights":["key metric as bold fact","metric 2","metric 3"],"pullQuotes":["most compelling stat as short phrase","second fact","third fact"],"marketContext":"2 sentences on why ${prop.city} market supports this pricing"}`;
+    const nd=await callClaude({model:'claude-sonnet-4-6',max_tokens:5000,messages:[{role:'user',content:narrativePrompt}]});
+    try{ai=JSON.parse((nd.content?.[0]?.text||'{}').replace(/```json|```/g,'').trim());}catch(e){ai={};}
+  }catch(e){st.innerHTML=`<span style="color:#f5a623;">⚠ AI unavailable (${e.message}) — building from entered data.</span>`;await new Promise(r=>setTimeout(r,2000));}
 
-FINANCIALS: Price $${fmtNum(fin.price)||'N/A'}, NOI $${fmtNum(fin.noi)||'N/A'}, Cap Rate ${fin.capRate||'N/A'}%, Occupancy ${fin.occupancy||'N/A'}%, WALT ${fin.walt||'N/A'} yrs
-GPR: $${fmtNum(fin.gpr)||'N/A'}, Vacancy: ${fin.vacancy||'N/A'}%, Op Expenses: $${fmtNum(fin.opex)||'N/A'}
-${fin.finDebtService ? 'Debt Service: $' + fmtNum(fin.finDebtService) : ''} ${fin.finDscr ? 'DSCR: ' + fin.finDscr : ''} ${fin.finCashOnCash ? 'Cash-on-Cash: ' + fin.finCashOnCash : ''}
-Additional: ${fin.additionalNotes || ''} ${fin.recentCapex ? 'Recent CapEx: ' + fin.recentCapex : ''}
-RENT ROLL: ${rentRoll.length ? JSON.stringify(rentRoll) : 'Not provided'}
+  [fonts.heading,fonts.body,fonts.number].filter(Boolean).forEach(loadFont);
+  await new Promise(r=>setTimeout(r,800));
+  st.innerHTML=spin()+'Building document pages...';
+  await new Promise(r=>setTimeout(r,100));
 
-Write compelling, specific, data-rich copy. Include actual numbers wherever possible. Identify the 3 most financially significant facts as pullQuotes. Return ONLY JSON:
-{
-  "executiveSummary": "2-3 punchy paragraphs, lead with the strongest financial fact",
-  "propertyDescription": "2-3 detailed paragraphs with specific physical details",
-  "locationOverview": "2 paragraphs specific to ${prop.city}, ${prop.state} market",
-  "investmentHighlights": ["5-6 specific highlights with numbers where possible"],
-  "tenantSummary": "1-2 paragraphs specific to the rent roll",
-  "valuationNarrative": "2 paragraphs with pricing rationale and cap rate context",
-  "financialHighlights": ["3-4 key financial metrics stated as bold facts"],
-  "pullQuotes": ["most compelling financial stat as a short punchy phrase", "second compelling fact", "third fact"],
-  "marketContext": "2 sentences on why ${prop.city} market supports this pricing"
-}`;
+  const html=buildDocument(prop,fin,broker,rentRoll,ai,sections,disclaimer,docLabel,firm,city,fonts,selBrokers);
+  navigate('preview');
+  $('preview-title').textContent=`${prop.name} — ${docLabel}`;
+  $('preview-subtitle').textContent=`${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}`;
+  $('document-preview-container').innerHTML=html;
+  injectPrintCSS();
+  st.style.display='none';
+
+  const proj={id:Date.now(),docType:S.docType,propType:S.propType,name:prop.name,address:`${prop.address}, ${prop.city}, ${prop.state}`,price:fin.price,noi:fin.noi,capRate:fin.capRate,sf:prop.sf,createdAt:new Date().toLocaleDateString(),status:'complete'};
+  S.projects=[proj,...S.projects]; localStorage.setItem('cds_projects',JSON.stringify(S.projects));
+  toast('Document ready — Print / Save as PDF to export');
 }
 
-// ============ DYNAMIC HTML DOCUMENT BUILDER ============
-function buildDocumentHTML(prop, fin, broker, rentRoll, ai, sections, disclaimer, docTypeLabel, firmName, officeCity, fonts, design) {
-  const { widthIn, heightIn } = state.pageSettings;
-  const C = design.colors;
-  const F = fonts;
-  const ta = design.templateAnalysis;
-  const fullAddr = `${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}`;
-  const isLandscape = widthIn >= heightIn;
-  const photos = state.photoDataURLs;
+function injectPrintCSS(){
+  const ex=$('print-css'); if(ex) ex.remove();
+  const s=document.createElement('style'); s.id='print-css';
+  s.textContent=`@media print{@page{size:${S.page.w}in ${S.page.h}in;margin:0;}.doc-page{width:${S.page.w}in!important;height:${S.page.h}in!important;min-height:${S.page.h}in!important;}}`;
+  document.head.appendChild(s);
+}
 
-  // Derive design behaviors from template analysis
-  const useFullBleed = ta?.accentElements?.usesFullBleedPhotos !== false;
-  const useColorBands = ta?.accentElements?.usesColoredBands !== false;
-  const useSidebar = ta?.accentElements?.usesSidebarPanels !== false && design.layout === 'classic';
-  const usePullQuotes = ta?.accentElements?.usesPullQuotes !== false;
-  const useDecorativeBars = ta?.accentElements?.usesDecorativeBars !== false;
-  const photoStyle = ta?.accentElements?.photoStyle || 'full-bleed';
-  const headerStyle = ta?.accentElements?.headerStyle || 'dark-overlay';
-  const density = ta?.designLanguage?.density || 'balanced';
-  const formality = ta?.designLanguage?.formality || 'professional';
-  const photoEmphasis = ta?.designLanguage?.photoEmphasis || 'balanced';
-  const typographyContrast = ta?.designLanguage?.typographyContrast || 'medium';
 
-  const pad = isLandscape ? { h: '0.45in', v: '0.4in' } : { h: '0.4in', v: '0.35in' };
-  const bodyFontSize = density === 'dense' ? '9.5' : density === 'airy' ? '11' : '10.5';
-  const headingScale = typographyContrast === 'high' ? 1.4 : typographyContrast === 'low' ? 1.1 : 1.2;
 
-  // Google Fonts import
-  const fontFamilies = [...new Set([F.heading, F.body, F.number].filter(f => f && f !== 'Georgia'))];
-  const googleFontUrl = fontFamilies.map(f => `family=${f.replace(/ /g, '+')}:wght@300;400;500;600;700`).join('&');
+// ══════════════════════════════════════════════════════════════
+// SESSION 2 — Rich multi-layout document renderer
+// Every section has its own layout logic derived from template
+// analysis. 8 cover styles, 6 interior layouts, dynamic photo
+// placement, financial emphasis, pull quotes, accent elements.
+// ══════════════════════════════════════════════════════════════
 
-  // Accent color with opacity helper
-  const hex2rgba = (hex, alpha) => {
-    const r = parseInt(hex.slice(1,3),16), g = parseInt(hex.slice(3,5),16), b = parseInt(hex.slice(5,7),16);
-    return `rgba(${r},${g},${b},${alpha})`;
+function buildDocument(prop,fin,broker,rentRoll,ai,sections,disclaimer,docLabel,firm,city,F,selBrokers){
+  const {w,h}=S.page;
+  const C=S.design.colors;
+  const ta=S.design.analysis;
+  const isLandscape=w>=h;
+  const fullAddr=`${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}`;
+
+  // Typography scale
+  const bfs   = parseFloat(ta?.typography?.bodyFontSizePt  || 10.5);
+  const hfs   = parseFloat(ta?.typography?.headingFontSizePt || 22);
+  const hWt   = ta?.typography?.headingWeight || '500';
+  const allCap= ta?.typography?.useAllCapsEyebrows !== false;
+
+  // Design flags from template analysis (fall back to sensible defaults)
+  const useSidebar    = ta?.accentElements?.usesSidebarPanels  !== false && S.design.layout==='classic';
+  const usePullQuotes = ta?.accentElements?.usesPullQuotes      !== false;
+  const useColorBands = ta?.accentElements?.usesColoredBands    !== false;
+  const useDecorBars  = ta?.accentElements?.usesDecorativeBars  !== false;
+  const cornerR       = parseInt(ta?.accentElements?.cornerRadiusPx)   || 4;
+  const accentBarH    = parseInt(ta?.coverPage?.accentBarThicknessPx)  || 5;
+  const photoStyle    = ta?.accentElements?.photoStyle       || 'full-bleed';
+  const headerStyle   = ta?.coverPage?.photoTreatment        || ta?.accentElements?.headerStyle || 'full-bleed-dark-overlay';
+  const photoOpacity  = parseFloat(ta?.coverPage?.photoOpacity)        || 0.55;
+  const photoEmphasis = ta?.designLanguage?.photoEmphasis    || 'balanced';
+  const formality     = ta?.designLanguage?.formality        || 'professional';
+  const density       = ta?.designLanguage?.density          || 'balanced';
+  const divStyle      = ta?.accentElements?.sectionDividerStyle || 'colored-rule';
+  const statStyle     = ta?.accentElements?.statCardStyle    || 'dark-filled';
+  const sidebarW      = isLandscape ? '2.05in' : '1.7in';
+
+  // Per-section page layout from template (falls back to first layout)
+  const getLayout = type => {
+    if(!ta?.pageLayouts?.length) return null;
+    return ta.pageLayouts.find(l=>l.pageType===type) || ta.pageLayouts[0];
   };
 
-  // Shared CSS
-  const css = `
-    @import url('https://fonts.googleapis.com/css2?${googleFontUrl}&display=swap');
-    * { box-sizing:border-box; margin:0; padding:0; }
-    .doc-page { width:${widthIn}in; height:${heightIn}in; min-height:${heightIn}in; overflow:hidden; background:${C.bg}; position:relative; font-family:'${F.body}',Inter,sans-serif; color:${C.text}; font-size:${bodyFontSize}pt; line-height:1.65; }
-    .pg-footer { position:absolute; bottom:0; left:0; right:0; height:26px; background:${C.primary}; display:flex; align-items:center; justify-content:space-between; padding:0 ${pad.h}; }
-    .pg-footer-firm { font-size:7pt; color:${C.accent}; letter-spacing:0.5px; }
-    .pg-footer-broker { font-size:7pt; color:rgba(255,255,255,0.55); }
-    .section-eyebrow { font-size:7pt; letter-spacing:2px; text-transform:uppercase; color:${C.secondary}; font-family:'${F.heading}',serif; font-weight:600; margin-bottom:5px; }
-    .section-rule { height:2px; background:${C.rule}; margin-bottom:12px; }
-    .section-title { font-family:'${F.heading}',serif; font-size:${Math.round(parseFloat(bodyFontSize)*headingScale)}pt; font-weight:500; color:${C.primary}; margin-bottom:12px; line-height:1.2; }
-    .body-text { font-size:${bodyFontSize}pt; line-height:1.75; color:${C.text}; }
-    .stat-num { font-family:'${F.number||F.heading}',serif; }
-    .highlight-text { background:${hex2rgba(C.accent, 0.25)}; padding:1px 4px; border-radius:2px; font-weight:600; }
-    .pull-quote { border-left:4px solid ${C.accent}; padding:10px 14px; margin:14px 0; background:${hex2rgba(C.primary, 0.04)}; border-radius:0 4px 4px 0; }
-    .pull-quote-text { font-family:'${F.heading}',serif; font-size:${Math.round(parseFloat(bodyFontSize)*1.15)}pt; color:${C.primary}; font-style:italic; line-height:1.4; }
-    .accent-bar { height:4px; background:linear-gradient(90deg,${C.accent},${C.secondary}); margin-bottom:14px; border-radius:2px; }
-    .stat-card { background:${C.primary}; border-radius:6px; padding:${isLandscape ? '14px 12px' : '10px 10px'}; text-align:center; }
-    .stat-card-label { font-size:7pt; letter-spacing:1.5px; text-transform:uppercase; color:${C.accent}; font-family:'${F.body}',sans-serif; margin-bottom:5px; }
-    .stat-card-value { font-size:${isLandscape ? '19' : '15'}pt; color:#fff; font-weight:600; font-family:'${F.number||F.heading}',serif; }
-    .photo-caption { font-size:7.5pt; color:${C.text}; opacity:0.6; margin-top:4px; font-style:italic; }
-    .fin-highlight { color:${C.secondary}; font-weight:600; font-family:'${F.number||F.heading}',serif; font-size:${Math.round(parseFloat(bodyFontSize)*1.1)}pt; }
-  `;
+  // Padding: honour template cssVariables or cssOverrides if present
+  const co  = S.design.cssOverrides || {};  // CSS overrides from copy-mode vision pass
+  const pp  = ta?.cssVariables || {};
 
-  function footer(pageNum) {
-    return `<div class="pg-footer">
-      <span class="pg-footer-firm">${firmName} · ${officeCity} · ${docTypeLabel}</span>
-      ${broker.name ? `<span class="pg-footer-broker">${broker.name}${broker.title ? ' · ' + broker.title : ''}${broker.phone ? ' · ' + broker.phone : ''}</span>` : ''}
-    </div>`;
+  // In copy mode, cssOverrides values take priority over everything else
+  const ov  = (cssVar, fallback) => co[cssVar] || fallback;
+
+  const padH    = `${ov('--doc-pad-top', pp.pagePaddingTopIn||0.42)}in ${ov('--doc-pad-right', pp.pagePaddingRightIn||0.5)}in ${ov('--doc-pad-bottom', pp.pagePaddingBottomIn||0.42)}in ${ov('--doc-pad-left', pp.pagePaddingLeftIn||0.5)}in`;
+  const padTight= `0.22in ${ov('--doc-pad-right', pp.pagePaddingRightIn||0.5)}in 0.22in ${ov('--doc-pad-left', pp.pagePaddingLeftIn||0.5)}in`;
+
+  // Override colours from cssOverrides if in copy mode
+  if(Object.keys(co).length>0){
+    if(co['--doc-primary'])   C.primary   = co['--doc-primary'];
+    if(co['--doc-secondary']) C.secondary = co['--doc-secondary'];
+    if(co['--doc-accent'])    C.accent    = co['--doc-accent'];
+    if(co['--doc-text'])      C.text      = co['--doc-text'];
+    if(co['--doc-bg'])        C.bg        = co['--doc-bg'];
+    if(co['--doc-rule'])      C.rule      = co['--doc-rule'];
   }
 
-  function decorativeBar(width='100%') {
-    if (!useDecorativeBars) return '';
-    return `<div style="height:3px;background:${C.accent};width:${width};margin-bottom:12px;border-radius:2px;"></div>`;
-  }
+  // ── Google Fonts import ──────────────────────────────────────
+  // cssOverrides may specify exact font stacks — extract family name for loading
+  const ovHeadingFont = co['--doc-heading-font']?.match(/'([^']+)'/)?.[1] || '';
+  const ovBodyFont    = co['--doc-body-font']?.match(/'([^']+)'/)?.[1]    || '';
+  const ovNumberFont  = co['--doc-number-font']?.match(/'([^']+)'/)?.[1]  || '';
+  const resolvedH = ovHeadingFont || F.heading;
+  const resolvedB = ovBodyFont    || F.body;
+  const resolvedN = ovNumberFont  || F.number || F.heading;
+  const fontFamilies=[...new Set([resolvedH,resolvedB,resolvedN].filter(f=>f&&f!=='Georgia'))];
+  const gfUrl=fontFamilies.map(f=>`family=${f.replace(/ /g,'+')}:wght@300;400;500;600;700`).join('&');
 
-  function pullQuote(text) {
-    if (!usePullQuotes || !text) return '';
-    return `<div class="pull-quote"><div class="pull-quote-text">"${text}"</div></div>`;
-  }
+  // Update F with resolved fonts so page builder uses them
+  F = { heading: resolvedH||F.heading, body: resolvedB||F.body, number: resolvedN||F.number||F.heading };
 
-  function photoBlock(src, heightIn_val, style='full-bleed', caption='') {
-    if (!src) return '';
-    const borderRadius = photoStyle === 'bordered' ? '6px' : photoStyle === 'inset' ? '4px' : '0';
-    const border = photoStyle === 'bordered' ? `border:2px solid ${C.accent};` : '';
-    return `<div style="height:${heightIn_val};overflow:hidden;border-radius:${borderRadius};${border}position:relative;">
-      <img src="${src}" style="width:100%;height:100%;object-fit:cover;display:block;" />
-      ${useColorBands ? `<div style="position:absolute;bottom:0;left:0;right:0;height:6px;background:${C.accent};opacity:0.8;"></div>` : ''}
-    </div>${caption ? `<div class="photo-caption">${caption}</div>` : ''}`;
-  }
+  // Override typography from cssOverrides
+  const ovBfs  = co['--doc-body-size']    ? parseFloat(co['--doc-body-size'])    : bfs;
+  const ovHfs  = co['--doc-heading-size'] ? parseFloat(co['--doc-heading-size']) : hfs;
+  const ovHWt  = co['--doc-heading-wt']  || hWt;
+  const ovCorR = co['--doc-corner-r']    ? parseInt(co['--doc-corner-r'])        : cornerR;
+  const ovAbH  = co['--doc-accent-bar-h']? parseInt(co['--doc-accent-bar-h'])   : accentBarH;
+  const ovSbW  = co['--doc-sidebar-w']   || sidebarW;
+  const ovScBg = co['--doc-stat-bg']     || (statStyle==='accent-filled'?C.accent:statStyle==='light-outlined'?'transparent':C.primary);
+  const ovScTx = co['--doc-stat-text']   || (statStyle==='accent-filled'?C.primary:statStyle==='light-outlined'?C.primary:'#ffffff');
+  const ovScAc = co['--doc-stat-accent'] || (statStyle==='light-outlined'?C.secondary:C.accent);
+  const ovFtH  = co['--doc-footer-h']    ? co['--doc-footer-h']                 : '26px';
+  const ovLnH  = co['--doc-line-height'] ? parseFloat(co['--doc-line-height'])  : (pp.lineHeightBody||1.7);
 
-  function sectionHeader(title, eyebrow) {
-    return `
-      ${useDecorativeBars ? decorativeBar() : ''}
-      <div class="section-eyebrow">${eyebrow || docTypeLabel}</div>
-      <div class="section-title">${title}</div>
-    `;
-  }
+  const scBdr  = statStyle==='light-outlined' ? `border:1.5px solid ${C.secondary};` : '';
 
-  function colorBand(content, tight=false) {
-    if (!useColorBands) return `<div style="padding:${tight?'10px':'14px'} 14px;margin-bottom:10px;">${content}</div>`;
-    return `<div style="background:${C.primary};border-radius:6px;padding:${tight?'10px':'14px'} 14px;margin-bottom:10px;">${content}</div>`;
-  }
+  // ── Shared CSS ───────────────────────────────────────────────
+  const css=`
+@import url('https://fonts.googleapis.com/css2?${gfUrl}&display=swap');
+*{box-sizing:border-box;margin:0;padding:0;}
+.doc-page{width:${w}in;height:${h}in;min-height:${h}in;overflow:hidden;background:${C.bg};position:relative;
+  font-family:'${F.body}',Inter,sans-serif;color:${C.text};font-size:${ovBfs}pt;line-height:${ovLnH};}
+.pg-footer{position:absolute;bottom:0;left:0;right:0;height:${ovFtH};background:${C.primary};
+  display:flex;align-items:center;justify-content:space-between;padding:0 ${pp.pagePaddingRightIn||0.5}in;}
+.pg-firm{font-size:7pt;color:${C.accent};letter-spacing:0.5px;font-family:'${F.body}',sans-serif;}
+.pg-broker{font-size:7pt;color:rgba(255,255,255,0.5);font-family:'${F.body}',sans-serif;}
+.eyebrow{font-size:7pt;letter-spacing:2px;${allCap?'text-transform:uppercase;':''}color:${C.secondary};
+  font-family:'${F.heading}',serif;font-weight:600;margin-bottom:5px;}
+.sec-title{font-family:'${F.heading}',serif;font-size:${Math.round(ovHfs*0.72)}pt;font-weight:${ovHWt};
+  color:${C.primary};margin-bottom:12px;line-height:1.2;}
+.body-text{font-size:${ovBfs}pt;line-height:${ovLnH};color:${C.text};}
+.stat-num{font-family:'${F.number||F.heading}',serif;}
+.pull-quote{border-left:4px solid ${C.accent};padding:9px 13px;margin:12px 0;
+  background:${H(C.primary,0.04)};border-radius:0 ${ovCorR}px ${ovCorR}px 0;}
+.pull-quote-text{font-family:'${F.heading}',serif;font-size:${ovBfs*1.1}pt;color:${C.primary};font-style:italic;line-height:1.4;}
+.sc{background:${ovScBg};${scBdr}border-radius:${ovCorR}px;padding:${isLandscape?'12px 10px':'8px 8px'};text-align:center;}
+.sc-lbl{font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${ovScAc};margin-bottom:3px;font-family:'${F.body}',sans-serif;}
+.sc-val{font-size:${isLandscape?'17':'13'}pt;color:${ovScTx};font-weight:600;font-family:'${F.number||F.heading}',serif;}
+.hl{font-weight:600;color:${C.secondary};font-family:'${F.number||F.heading}',serif;}
+.accent-strip{height:${ovAbH}px;background:${C.accent};position:absolute;bottom:${ovFtH};left:0;right:0;}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:${isLandscape?'0.22in':'0.18in'};}
+.sidebar-col{width:${ovSbW};flex-shrink:0;padding-left:0.18in;border-left:1.5px solid ${H(C.rule,0.18)};overflow:hidden;}
+.callout-box{padding:10px 12px;border-radius:${ovCorR}px;border-left:4px solid ${C.secondary};
+  background:${H(C.secondary,0.07)};margin:10px 0;}
+.fin-row-hi{background:${C.primary};}
+.fin-row-hi td{color:#fff!important;font-weight:600;}
+.fin-row-hi .fin-val{color:${C.accent}!important;font-family:'${F.number||F.heading}',serif;font-size:${ovBfs+1.5}pt;}
+.color-band-accent{background:${C.accent};padding:10px 14px;border-radius:${ovCorR}px;margin-bottom:12px;}
+`;
 
-  function statCards(cards) {
-    const cols = Math.min(cards.length, isLandscape ? 4 : 3);
+  // ── Helpers ──────────────────────────────────────────────────
+  const H=(hex,a)=>hex2rgba(hex,a);
+  const photos=[...S.photos]; let pi=0;
+  const nextPhoto=()=>photos[pi++]||null;
+
+  const footer=()=>`<div class="pg-footer">
+    <span class="pg-firm">${firm} · ${city} · ${docLabel}</span>
+    ${broker.name?`<span class="pg-broker">${broker.name}${broker.title?' · '+broker.title:''}${broker.phone?' · '+broker.phone:''}</span>`:''}
+  </div>`;
+
+  // Photo image with style from template
+  const pImg=(src,ht,radius=true)=>src
+    ?`<img src="${src}" style="width:100%;height:${ht};object-fit:cover;display:block;${radius?`border-radius:${ovCorR}px;`:''}"
+        ${photoStyle==='bordered'?`style="border:2px solid ${C.accent};"`:''}/>`
+    :'';
+
+  // Stat card grid
+  const statCards=(cards,maxCols=4)=>{
+    if(!cards.length) return '';
+    const cols=Math.min(cards.length,isLandscape?maxCols:Math.min(maxCols,3));
     return `<div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:8px;margin-bottom:14px;">
-      ${cards.map(([l,v]) => `<div class="stat-card"><div class="stat-card-label">${l}</div><div class="stat-card-value stat-num">${v}</div></div>`).join('')}
+      ${cards.map(([l,v])=>`<div class="sc"><div class="sc-lbl">${l}</div><div class="sc-val stat-num">${v}</div></div>`).join('')}
     </div>`;
-  }
+  };
 
-  function inlinePhoto(src, width, float, caption='') {
-    if (!src) return '';
-    return `<div style="float:${float};width:${width};margin:${float==='right'?'0 0 10px 14px':'0 14px 10px 0'};border-radius:4px;overflow:hidden;">
-      <img src="${src}" style="width:100%;height:auto;display:block;object-fit:cover;" />
-      ${caption ? `<div class="photo-caption" style="padding:2px 4px;">${caption}</div>` : ''}
+  // Section divider — style derived from template
+  const divider=()=>{
+    if(divStyle==='colored-band') return `<div style="height:3px;background:${C.rule};margin-bottom:12px;border-radius:1px;"></div>`;
+    if(divStyle==='decorative-dots') return `<div style="display:flex;gap:4px;margin-bottom:12px;">${[...Array(5)].map((_,i)=>`<div style="width:${i===2?8:5}px;height:${i===2?8:5}px;border-radius:50%;background:${i===2?C.accent:C.rule};opacity:${i===2?1:0.4};"></div>`).join('')}</div>`;
+    if(divStyle==='whitespace') return `<div style="margin-bottom:12px;"></div>`;
+    return `<div style="height:2px;background:${C.rule};margin-bottom:12px;border-radius:1px;"></div>`;
+  };
+
+  // Pull quote
+  const pq=(text)=>usePullQuotes&&text
+    ?`<div class="pull-quote"><div class="pull-quote-text">"${text}"</div></div>`:'' ;
+
+  // Section header — adapts to divStyle
+  const secHdr=(title,eyebrow)=>{
+    const eye=`<div class="eyebrow">${eyebrow||docLabel}</div>`;
+    const decBar=useDecorBars?`<div style="height:3px;background:${C.accent};width:36px;margin-bottom:10px;border-radius:2px;"></div>`:'';
+    if(divStyle==='colored-band') {
+      return `${decBar}${eye}<div style="border-bottom:2.5px solid ${C.rule};margin-bottom:12px;padding-bottom:8px;"><div class="sec-title" style="margin-bottom:0;">${title}</div></div>`;
+    }
+    return `${decBar}${eye}${divider()}<div class="sec-title">${title}</div>`;
+  };
+
+  // Sidebar box — coloured panel for key metrics
+  const sideBox=(label,value,sub='')=>
+    `<div style="background:${C.primary};border-radius:${ovCorR}px;padding:10px 12px;margin-bottom:8px;text-align:center;">
+      <div style="font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:3px;font-family:'${F.body}',sans-serif;">${label}</div>
+      <div style="font-size:${isLandscape?'16':'13'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${value}</div>
+      ${sub?`<div style="font-size:7.5pt;color:rgba(255,255,255,0.6);margin-top:2px;">${sub}</div>`:''}
     </div>`;
-  }
 
-  // Track photo index
-  let photoIdx = 0;
-  function nextPhoto() { return photos[photoIdx++] || null; }
+  // Inset photo (float)
+  const insetPh=(src,width,float)=>src
+    ?`<div style="float:${float};width:${width};margin:${float==='right'?'0 0 10px 14px':'0 14px 10px 0'};border-radius:${ovCorR}px;overflow:hidden;">${pImg(src,'auto',false)}</div>`
+    :'';
 
-  let pages = `<style>${css}</style>`;
-
-  // ===== COVER PAGE =====
-  if (sections.includes('cover')) {
-    const heroPhoto = photos[0];
-    photoIdx = 1;
-    const coverStats = [
-      fin.price && ['Asking Price', '$' + fmtNum(fin.price)],
-      prop.sf && ['Building SF', fmtNum(prop.sf) + ' SF'],
-      fin.capRate && ['Cap Rate', fin.capRate + '%'],
-      fin.noi && ['NOI', '$' + fmtNum(fin.noi)],
-      fin.occupancy && ['Occupancy', fin.occupancy + '%'],
-    ].filter(Boolean);
-
-    if (headerStyle === 'split' && heroPhoto) {
-      // Split layout: photo left, text right
-      pages += `<div class="doc-page" style="background:${C.primary};">
-        <div style="position:absolute;left:0;top:0;width:55%;height:100%;overflow:hidden;">
-          <img src="${heroPhoto}" style="width:100%;height:100%;object-fit:cover;display:block;" />
-          <div style="position:absolute;inset:0;background:linear-gradient(to right,transparent 60%,${C.primary});"></div>
-        </div>
-        <div style="position:absolute;right:0;top:0;width:48%;height:100%;padding:${pad.h};display:flex;flex-direction:column;justify-content:center;">
-          <div style="font-size:7pt;letter-spacing:2.5px;text-transform:uppercase;color:${C.accent};font-family:'${F.heading}',serif;font-weight:600;margin-bottom:0.2in;">${firmName} · ${docTypeLabel}</div>
-          <div style="height:3px;background:${C.accent};width:40px;margin-bottom:16px;"></div>
-          <div style="font-family:'${F.heading}',serif;font-size:${isLandscape?'28':'22'}pt;font-weight:500;color:#fff;line-height:1.1;margin-bottom:10px;">${prop.name}</div>
-          <div style="font-size:10pt;color:rgba(255,255,255,0.65);margin-bottom:16px;">${fullAddr}</div>
-          <div style="border-top:1px solid ${hex2rgba(C.accent,0.4)};padding-top:14px;">
-            ${coverStats.map(([l,v]) => `<div style="margin-bottom:8px;"><div style="font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};opacity:0.8;">${l}</div><div style="font-size:16pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${v}</div></div>`).join('')}
-          </div>
-        </div>
-        ${broker.name ? `<div style="position:absolute;bottom:34px;right:${pad.h};text-align:right;"><div style="font-size:9pt;color:#fff;font-weight:500;">${broker.name}</div>${broker.title?`<div style="font-size:8pt;color:${C.accent};">${broker.title}</div>`:''}</div>` : ''}
-        ${footer()}
-      </div>`;
-    } else {
-      // Dark overlay layout (default) — full-bleed photo with dramatic overlay
-      pages += `<div class="doc-page" style="background:${C.primary};">
-        ${heroPhoto ? `
-          <div style="position:absolute;inset:0;">
-            <img src="${heroPhoto}" style="width:100%;height:100%;object-fit:cover;display:block;opacity:${photoEmphasis==='dominant'?'0.75':photoEmphasis==='subtle'?'0.35':'0.55'};" />
-            <div style="position:absolute;inset:0;background:linear-gradient(160deg,${hex2rgba(C.primary,0.3)} 0%,${hex2rgba(C.primary,0.75)} 50%,${hex2rgba(C.primary,0.97)} 100%);"></div>
-          </div>
-        ` : ''}
-        <div style="position:relative;z-index:2;height:100%;display:flex;flex-direction:column;padding:${pad.h};padding-bottom:0;">
-          <div style="margin-bottom:auto;">
-            <div style="font-size:7.5pt;letter-spacing:3px;text-transform:uppercase;color:${C.accent};font-family:'${F.heading}',serif;font-weight:600;margin-bottom:${isLandscape?'0.25in':'0.18in'};">${firmName.toUpperCase()} &nbsp;·&nbsp; ${docTypeLabel.toUpperCase()}</div>
-            <div style="height:4px;background:${C.accent};width:${isLandscape?'60px':'45px'};margin-bottom:${isLandscape?'18px':'13px'};"></div>
-            <div style="font-family:'${F.heading}',serif;font-size:${isLandscape?'40':'30'}pt;font-weight:${formality==='luxury'?'400':'500'};color:#fff;line-height:1.05;margin-bottom:10px;max-width:${isLandscape?'6.5in':'4.5in'};letter-spacing:${formality==='luxury'?'-0.5px':'0'};">${prop.name}</div>
-            <div style="font-size:${isLandscape?'13':'11'}pt;color:rgba(255,255,255,0.7);margin-bottom:8px;">${fullAddr}</div>
-            ${prop.sf || prop.yearBuilt ? `<div style="font-size:9pt;color:rgba(255,255,255,0.5);">${prop.sf ? fmtNum(prop.sf) + ' SF' : ''} ${prop.sf && prop.yearBuilt ? '·' : ''} ${prop.yearBuilt ? 'Built ' + prop.yearBuilt : ''} ${prop.zoning ? '· ' + prop.zoning : ''}</div>` : ''}
-          </div>
-          <div style="border-top:1.5px solid ${hex2rgba(C.accent,0.5)};padding-top:${isLandscape?'0.18in':'0.14in'};padding-bottom:${isLandscape?'0.3in':'0.25in'};display:flex;gap:${isLandscape?'0.35in':'0.2in'};flex-wrap:wrap;align-items:flex-end;">
-            ${coverStats.map(([l,v]) => `<div style="flex-shrink:0;">
-              <div style="font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${hex2rgba(C.accent,0.8)};font-family:'${F.body}',sans-serif;margin-bottom:4px;">${l}</div>
-              <div style="font-family:'${F.number||F.heading}',serif;font-size:${isLandscape?'22':'17'}pt;color:#fff;font-weight:600;line-height:1;">${v}</div>
-            </div>`).join('')}
-            <div style="margin-left:auto;text-align:right;align-self:flex-end;">
-              ${broker.name ? `<div style="font-size:10pt;color:#fff;font-weight:500;">${broker.name}</div>` : ''}
-              ${broker.title ? `<div style="font-size:8.5pt;color:${C.accent};">${broker.title}</div>` : ''}
-              ${broker.phone ? `<div style="font-size:8pt;color:rgba(255,255,255,0.55);">${broker.phone}</div>` : ''}
-            </div>
-          </div>
-          <div style="position:absolute;bottom:26px;left:0;right:0;height:5px;background:${C.accent};"></div>
-        </div>
+  // Standard page wrap — full, sidebar, editorial, magazine, minimal
+  const pageWrap=(main,side,layoutOverride)=>{
+    const lo=layoutOverride||S.design.layout;
+    // Magazine: top colour band + two-col
+    if(lo==='magazine'){
+      return `<div class="doc-page">
+        <div style="background:${C.primary};height:6px;"></div>
+        <div style="height:calc(100% - 32px);padding:${padTight};overflow:hidden;">
+          <div class="two-col">${main}</div>
+        </div>${footer()}</div>`;
+    }
+    // Minimal: generous whitespace, thin rule only
+    if(lo==='minimal'){
+      return `<div class="doc-page">
+        <div style="height:calc(100% - 26px);padding:${padH};overflow:hidden;">${main}</div>
         ${footer()}
       </div>`;
     }
-  }
-
-  // ===== HIGHLIGHTS + EXEC SUMMARY — with photo strip =====
-  if (sections.includes('highlights')) {
-    const hiList = ai.investmentHighlights?.length ? ai.investmentHighlights : (prop.highlights ? prop.highlights.split('\n').filter(Boolean) : []);
-    const finHighlights = ai.financialHighlights || [];
-    const pq1 = ai.pullQuotes?.[0];
-    const sidePhoto = nextPhoto();
-
-    const mainContent = `
-      ${sectionHeader('Investment Highlights', docTypeLabel)}
-      ${finHighlights.length ? `<div style="margin-bottom:12px;">${finHighlights.map(h => `<div style="display:flex;align-items:flex-start;gap:8px;padding:5px 0;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};"><div style="width:8px;height:8px;border-radius:50%;background:${C.accent};margin-top:3px;flex-shrink:0;"></div><span class="body-text" style="font-weight:600;color:${C.primary};">${h}</span></div>`).join('')}</div>` : ''}
-      ${hiList.map(h => `<div style="display:flex;align-items:flex-start;gap:9px;padding:6px 0;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};"><div style="width:6px;height:6px;border-radius:50%;background:${C.secondary};margin-top:4px;flex-shrink:0;"></div><span class="body-text">${h}</span></div>`).join('')}
-      ${pq1 ? pullQuote(pq1) : ''}
-      ${ai.executiveSummary ? `<div style="margin-top:12px;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.secondary};margin-bottom:6px;">Executive Summary</div><div class="body-text">${ai.executiveSummary.slice(0,600)}</div></div>` : ''}
-    `;
-
-    const sideContent = sidePhoto ? `
-      ${photoBlock(sidePhoto, isLandscape ? '1.8in' : '2.2in', photoStyle)}
-      ${fin.price ? `<div style="margin-top:10px;padding:10px;background:${C.primary};border-radius:5px;text-align:center;"><div style="font-size:7pt;letter-spacing:1px;text-transform:uppercase;color:${C.accent};margin-bottom:3px;">Offered At</div><div style="font-size:17pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">$${fmtNum(fin.price)}</div>${fin.capRate?`<div style="font-size:8pt;color:rgba(255,255,255,0.6);margin-top:2px;">${fin.capRate}% Cap Rate</div>`:''}</div>` : ''}
-      ${fin.noi ? `<div style="margin-top:8px;padding:8px 10px;background:${hex2rgba(C.secondary,0.08)};border-left:3px solid ${C.secondary};border-radius:0 4px 4px 0;"><div style="font-size:7pt;color:${C.secondary};text-transform:uppercase;letter-spacing:1px;">NOI</div><div style="font-size:14pt;font-weight:600;color:${C.primary};font-family:'${F.number||F.heading}',serif;">$${fmtNum(fin.noi)}</div></div>` : ''}
-    ` : '';
-
-    pages += pageLayout(mainContent, sideContent, useSidebar, C, pad, footer, isLandscape);
-  }
-
-  // ===== PROPERTY DETAILS — photo inset + specs table =====
-  if (sections.includes('property')) {
-    const propRows = [['Property Name',prop.name],['Address',fullAddr],['County',prop.county],['Property Type',state.propType],['Year Built',prop.yearBuilt],['Building Size',prop.sf?fmtNum(prop.sf)+' SF':''],['Lot Size',prop.acres?prop.acres+' Acres':''],['Buildings',prop.buildings],['Suites / Units',prop.units],['Zoning',prop.zoning],['Clear Height',prop.clearHeight?prop.clearHeight+' ft':''],['Parking',prop.parking?prop.parking+' spaces':'']].filter(([,v])=>v);
-    const insetPh = nextPhoto();
-    const pq2 = ai.pullQuotes?.[1];
-
-    const mainContent = `
-      ${sectionHeader('Property Details', docTypeLabel)}
-      ${insetPh && photoEmphasis !== 'subtle' ? inlinePhoto(insetPh, isLandscape ? '42%' : '38%', 'right') : ''}
-      ${ai.propertyDescription ? `<div class="body-text" style="margin-bottom:14px;">${ai.propertyDescription.slice(0,500)}</div>` : ''}
-      <table style="width:100%;border-collapse:collapse;font-size:${parseFloat(bodyFontSize)-1}pt;clear:both;">
-        ${propRows.map((r,i) => `<tr style="background:${i%2===0?hex2rgba(C.primary,0.04):'transparent'};">
-          <td style="padding:7px 10px;font-weight:600;color:${C.primary};width:35%;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">${r[0]}</td>
-          <td style="padding:7px 10px;color:${C.text};border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">${r[1]}</td>
-        </tr>`).join('')}
-      </table>
-      ${pq2 ? pullQuote(pq2) : ''}
-    `;
-    pages += pageLayout(mainContent, '', false, C, pad, footer, isLandscape);
-  }
-
-  // ===== PHOTOS PAGE — dynamic multi-photo layout =====
-  if (sections.includes('photos') && photos.length > 0) {
-    // Collect remaining photos for this page
-    const pagePhotos = [];
-    let ph;
-    while ((ph = nextPhoto()) && pagePhotos.length < 6) pagePhotos.push(ph);
-    if (photos[0] && pagePhotos.length === 0) pagePhotos.push(photos[0]);
-
-    let photoGrid = '';
-    if (pagePhotos.length === 1) {
-      photoGrid = `<div style="height:${isLandscape?'5.2in':'6.8in'};border-radius:4px;overflow:hidden;">${photoBlock(pagePhotos[0], '100%', photoStyle)}</div>`;
-    } else if (pagePhotos.length === 2) {
-      photoGrid = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;height:${isLandscape?'5.2in':'6.8in'};">${pagePhotos.map(p => `<div style="overflow:hidden;border-radius:4px;">${photoBlock(p,'100%',photoStyle)}</div>`).join('')}</div>`;
-    } else if (pagePhotos.length === 3) {
-      photoGrid = `<div style="display:grid;grid-template-columns:1.5fr 1fr;grid-template-rows:1fr 1fr;gap:10px;height:${isLandscape?'5.2in':'6.5in'};">
-        <div style="grid-row:1/3;overflow:hidden;border-radius:4px;">${photoBlock(pagePhotos[0],'100%',photoStyle)}</div>
-        <div style="overflow:hidden;border-radius:4px;">${photoBlock(pagePhotos[1],'100%',photoStyle)}</div>
-        <div style="overflow:hidden;border-radius:4px;">${photoBlock(pagePhotos[2],'100%',photoStyle)}</div>
-      </div>`;
-    } else {
-      const perRow = isLandscape ? 3 : 2;
-      photoGrid = `<div style="display:grid;grid-template-columns:repeat(${perRow},1fr);gap:10px;">
-        ${pagePhotos.map(p => `<div style="height:${isLandscape?'2.4in':'2.8in'};overflow:hidden;border-radius:4px;">${photoBlock(p,'100%',photoStyle)}</div>`).join('')}
+    // Classic: wide content + narrow sidebar
+    if(lo==='classic'&&useSidebar&&side){
+      return `<div class="doc-page">
+        <div style="height:calc(100% - 26px);display:flex;overflow:hidden;">
+          <div style="flex:1;padding:${padH};overflow:hidden;">${main}</div>
+          <div class="sidebar-col" style="padding:${padH} 0 ${padH} 0.18in;">${side}</div>
+        </div>${footer()}</div>`;
+    }
+    // Editorial: dark top band
+    if(lo==='editorial'){
+      return `<div class="doc-page">
+        <div style="background:${C.primary};padding:${padTight};padding-bottom:0.14in;">
+          <div style="font-size:7pt;letter-spacing:2px;text-transform:uppercase;color:${C.accent};margin-bottom:4px;font-family:'${F.heading}',serif;">${docLabel}</div>
+        </div>
+        <div style="height:calc(100% - 26px - 0.55in);padding:${padTight};overflow:hidden;">${main}</div>
+        ${footer()}
       </div>`;
     }
-
-    pages += `<div class="doc-page">
-      <div style="height:calc(100% - 26px);padding:${pad.h};overflow:hidden;">
-        ${sectionHeader('Property Photos', docTypeLabel)}
-        ${photoGrid}
-      </div>
+    // Default single-column
+    return `<div class="doc-page">
+      <div style="height:calc(100% - 26px);padding:${padH};overflow:hidden;">${main}</div>
       ${footer()}
     </div>`;
-  }
+  };
 
-  // ===== LOCATION + AMENITY MAP =====
-  if (sections.includes('location')) {
-    const locText = ai.locationOverview || `${prop.city}, ${prop.state} offers strong fundamentals for commercial real estate investment. The subject property benefits from its strategic location within the ${prop.city} submarket.`;
-    const mktCtx = ai.marketContext || '';
-    const locPhoto = nextPhoto();
+  // Photo page — dynamic composition based on count
+  const photoPage=(photoArr)=>{
+    if(!photoArr.length) return '';
+    let grid='';
+    const cr=`border-radius:${ovCorR}px;overflow:hidden;`;
+    if(photoArr.length===1){
+      grid=`<div style="height:${isLandscape?'5.1in':'6.7in'};${cr}">${pImg(photoArr[0],'100%',false)}</div>`;
+    } else if(photoArr.length===2){
+      grid=`<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;height:${isLandscape?'5.1in':'6.5in'};">
+        ${photoArr.map(p=>`<div style="${cr}">${pImg(p,'100%',false)}</div>`).join('')}</div>`;
+    } else if(photoArr.length===3){
+      grid=`<div style="display:grid;grid-template-columns:1.6fr 1fr;grid-template-rows:1fr 1fr;gap:10px;height:${isLandscape?'5.1in':'6.3in'};">
+        <div style="grid-row:1/3;${cr}">${pImg(photoArr[0],'100%',false)}</div>
+        <div style="${cr}">${pImg(photoArr[1],'100%',false)}</div>
+        <div style="${cr}">${pImg(photoArr[2],'100%',false)}</div>
+      </div>`;
+    } else if(photoArr.length===4){
+      grid=`<div style="display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:10px;height:${isLandscape?'5.1in':'6.3in'};">
+        ${photoArr.map(p=>`<div style="${cr}">${pImg(p,'100%',false)}</div>`).join('')}</div>`;
+    } else {
+      const pr=isLandscape?3:2;
+      grid=`<div style="display:grid;grid-template-columns:repeat(${pr},1fr);gap:10px;">
+        ${photoArr.map(p=>`<div style="height:${isLandscape?'2.3in':'2.6in'};${cr}">${pImg(p,'100%',false)}</div>`).join('')}</div>`;
+    }
+    return `<div class="doc-page">
+      <div style="height:calc(100% - 26px);padding:${padH};overflow:hidden;">
+        ${secHdr('Property Photos',docLabel)}${grid}
+      </div>${footer()}
+    </div>`;
+  };
 
-    const mapCanvasHTML = `<canvas id="amenityMap" width="280" height="190" style="border-radius:5px;display:block;width:100%;"></canvas>`;
+  // Canvas location map (no tile server needed)
+  const mapCanvasScript=(canvasId,addrLabel)=>`<script>
+(function(){setTimeout(function(){
+  var c=document.getElementById('${canvasId}');if(!c)return;
+  var ctx=c.getContext('2d'),W=c.width,H=c.height;
+  ctx.fillStyle='#e8e4dc';ctx.fillRect(0,0,W,H);
+  // road grid
+  [[0,H*.45,W,H*.45],[0,H*.65,W,H*.65],[W*.3,0,W*.3,H],[W*.65,0,W*.65,H],[W*.5,0,W*.5,H*.4]].forEach(function(r){
+    ctx.beginPath();ctx.moveTo(r[0],r[1]);ctx.lineTo(r[2],r[3]);
+    ctx.strokeStyle='#d8ceb4';ctx.lineWidth=6;ctx.stroke();});
+  // blocks
+  [[W*.31,H*.1,W*.49,H*.43],[W*.66,H*.1,W*.9,H*.43],[W*.31,H*.66,W*.64,H*.9]].forEach(function(b){
+    ctx.fillStyle='#ccc4b0';ctx.fillRect(b[0],b[1],b[2]-b[0],b[3]-b[1]);});
+  // green space
+  ctx.fillStyle='#c4d9aa';ctx.fillRect(W*.01,H*.1,W*.28,H*.33);
+  // radius ring
+  var sx=W*.48,sy=H*.52,rad=Math.min(W,H)*.3;
+  ctx.beginPath();ctx.arc(sx,sy,rad,0,Math.PI*2);
+  ctx.strokeStyle='${C.accent}';ctx.lineWidth=1.5;ctx.setLineDash([5,4]);ctx.stroke();ctx.setLineDash([]);
+  ctx.beginPath();ctx.arc(sx,sy,rad,0,Math.PI*2);ctx.fillStyle='${H(C.accent,0.06)}';ctx.fill();
+  // subject pin
+  ctx.beginPath();ctx.arc(sx,sy,9,0,Math.PI*2);ctx.fillStyle='${C.primary}';ctx.fill();
+  ctx.strokeStyle='${C.accent}';ctx.lineWidth=3;ctx.stroke();
+  // POIs
+  [[-55,-20,'#1D9E75'],[45,25,'#D85A30'],[-30,45,'#7F77DD'],[60,-35,'#1D9E75'],[-65,15,'#D85A30'],[50,-55,'#7F77DD']].forEach(function(p){
+    ctx.beginPath();ctx.arc(sx+p[0],sy+p[1],5,0,Math.PI*2);ctx.fillStyle=p[2];ctx.fill();
+    ctx.strokeStyle='#fff';ctx.lineWidth=1.5;ctx.stroke();});
+  // label
+  ctx.font='bold 9px Arial';ctx.fillStyle='${C.primary}';ctx.textAlign='center';
+  ctx.fillText('${(addrLabel||'Subject Property').slice(0,24)}',sx,sy-14);
+  ctx.font='7px Arial';ctx.fillStyle='rgba(0,0,0,0.45)';ctx.fillText('1-mile radius',sx,sy+rad+12);
+},350);})();
+<\/script>`;
 
-    const sideContent = useSidebar ? `
-      ${mapCanvasHTML}
-      <div style="margin-top:8px;font-size:7pt;color:${C.text};opacity:0.7;font-style:italic;">Location & access map</div>
-      ${locPhoto ? `<div style="margin-top:10px;">${photoBlock(locPhoto, '1.4in', photoStyle)}</div>` : ''}
-      <div style="margin-top:10px;background:${hex2rgba(C.secondary,0.08)};border-left:3px solid ${C.secondary};padding:8px 10px;border-radius:0 4px 4px 0;">
-        <div style="font-size:7pt;text-transform:uppercase;letter-spacing:1px;color:${C.secondary};margin-bottom:4px;">Location</div>
-        <div style="font-size:8.5pt;color:${C.text};line-height:1.5;">${fullAddr}${prop.county?'<br>'+prop.county:''}</div>
-      </div>
-    ` : mapCanvasHTML;
+  // ═══════════════════════════════════════════════════════════
+  // PAGE ASSEMBLY
+  // ═══════════════════════════════════════════════════════════
+  let pages=`<style>${css}</style>`;
 
-    const mainContent = `
-      ${sectionHeader('Location & Market Overview', docTypeLabel)}
-      ${locPhoto && !useSidebar ? `<div style="height:${isLandscape?'1.8in':'2.2in'};margin-bottom:12px;border-radius:4px;overflow:hidden;">${photoBlock(locPhoto,'100%',photoStyle)}</div>` : ''}
-      <div class="body-text">${locText}</div>
-      ${mktCtx ? `<div style="margin-top:10px;padding:10px 12px;background:${hex2rgba(C.accent,0.12)};border-radius:5px;border-left:3px solid ${C.accent};"><div class="body-text" style="font-style:italic;">${mktCtx}</div></div>` : ''}
-      ${!useSidebar ? `<div style="margin-top:14px;">${mapCanvasHTML}</div>` : ''}
-    `;
-
-    pages += pageLayout(mainContent, sideContent, useSidebar, C, pad, footer, isLandscape);
-
-    // Draw amenity map on canvas after render
-    pages += `<script>
-(function() {
-  setTimeout(function() {
-    const canvas = document.getElementById('amenityMap');
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
-    const W = canvas.width, H = canvas.height;
-    ctx.fillStyle = '#e8e4dc'; ctx.fillRect(0,0,W,H);
-    // Road grid
-    const roads = [[0,H*0.45,W,H*0.45],[0,H*0.65,W,H*0.65],[W*0.3,0,W*0.3,H],[W*0.65,0,W*0.65,H]];
-    roads.forEach(([x1,y1,x2,y2]) => { ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(x2,y2); ctx.strokeStyle='#d8ceb4'; ctx.lineWidth=6; ctx.stroke(); });
-    // Subject marker
-    const sx=W*0.48, sy=H*0.52;
-    ctx.beginPath(); ctx.arc(sx,sy,8,0,Math.PI*2); ctx.fillStyle='${C.primary}'; ctx.fill();
-    ctx.strokeStyle='${C.accent}'; ctx.lineWidth=3; ctx.stroke();
-    // Radius ring
-    ctx.beginPath(); ctx.arc(sx,sy,60,0,Math.PI*2); ctx.strokeStyle='${C.accent}'; ctx.lineWidth=1.5; ctx.setLineDash([5,4]); ctx.stroke(); ctx.setLineDash([]);
-    // POI dots
-    const pois = [[sx-55,sy-20,'#1D9E75'],[sx+45,sy+25,'#D85A30'],[sx-30,sy+45,'#7F77DD'],[sx+60,sy-35,'#1D9E75'],[sx-70,sy+15,'#D85A30']];
-    pois.forEach(([px,py,col]) => { ctx.beginPath(); ctx.arc(px,py,5,0,Math.PI*2); ctx.fillStyle=col; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.5; ctx.stroke(); });
-    // Label
-    ctx.font='bold 9px Arial'; ctx.fillStyle='${C.primary}'; ctx.textAlign='center';
-    ctx.fillText('${(prop.address||'Subject Property').slice(0,25)}', sx, sy-14);
-    ctx.font='7px Arial'; ctx.fillStyle='rgba(0,0,0,0.5)'; ctx.fillText('1-mile radius', sx, sy+78);
-  }, 300);
-})();
-</script>`;
-  }
-
-  // ===== FINANCIAL SUMMARY — rich, data-forward layout =====
-  if (sections.includes('financials')) {
-    const cards = [
-      fin.price && ['Asking Price', '$'+fmtNum(fin.price)],
-      fin.ppsf && ['Price / SF', '$'+fin.ppsf],
-      fin.noi && ['NOI', '$'+fmtNum(fin.noi)],
-      fin.capRate && ['Cap Rate', fin.capRate+'%'],
-      fin.occupancy && ['Occupancy', fin.occupancy+'%'],
-      fin.walt && ['WALT', fin.walt+' Yrs'],
-      (fin.finDscr||fin.finDebtService) && ['DSCR', fin.finDscr||'See notes'],
-      fin.finCashOnCash && ['Cash-on-Cash', fin.finCashOnCash],
+  // ── COVER ──────────────────────────────────────────────────
+  if(sections.includes('cover')){
+    const hp=nextPhoto();
+    const coverStats=[
+      fin.price    &&['Asking Price','$'+fmtNum(fin.price)],
+      prop.sf      &&['Building SF', fmtNum(prop.sf)+' SF'],
+      fin.capRate  &&['Cap Rate',    fin.capRate+'%'],
+      fin.noi      &&['NOI',         '$'+fmtNum(fin.noi)],
+      fin.occupancy&&['Occupancy',   fin.occupancy+'%'],
     ].filter(Boolean);
 
-    const expBreakdown = fin.expenseBreakdown?.filter(e=>e.item&&e.amount) || [];
-    const pq3 = ai.pullQuotes?.[2];
+    // Determine cover layout from template or default
+    const isSplit = headerStyle.includes('split') || headerStyle==='split-left-photo' || headerStyle==='split-right-photo';
+    const isTopBand= headerStyle==='top-band';
+    const imgSide = headerStyle==='split-right-photo'?'right':'left';
+    const txtSide = imgSide==='left'?'right':'left';
 
-    const mainContent = `
-      ${sectionHeader('Financial Summary', docTypeLabel)}
-      ${statCards(cards.slice(0, isLandscape ? 4 : 3))}
-      ${cards.length > (isLandscape ? 4 : 3) ? statCards(cards.slice(isLandscape ? 4 : 3)) : ''}
-      ${pq3 ? pullQuote(pq3) : ''}
-      <table style="width:100%;border-collapse:collapse;font-size:${parseFloat(bodyFontSize)-0.5}pt;margin-top:10px;">
-        <thead><tr style="background:${C.primary};"><th style="padding:8px 10px;color:#fff;text-align:left;font-weight:500;font-size:7.5pt;">Income Statement</th><th style="padding:8px 10px;color:#fff;text-align:right;font-weight:500;font-size:7.5pt;">Annual</th></tr></thead>
-        <tbody>
-          ${fin.gpr?`<tr><td style="padding:7px 10px;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">Gross Potential Rent</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">$${fmtNum(fin.gpr)}</td></tr>`:''}
-          ${fin.vacancy?`<tr style="background:${hex2rgba(C.primary,0.03)};"><td style="padding:7px 10px;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};color:${C.text};">Less: Vacancy (${fin.vacancy}%)</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};color:#cc3333;">($${fmtNum(Math.round(parseFloat(fin.gpr||0)*parseFloat(fin.vacancy||0)/100))})</td></tr>`:''}
-          ${fin.egi?`<tr><td style="padding:7px 10px;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">Effective Gross Income</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">$${fmtNum(fin.egi)}</td></tr>`:''}
-          ${fin.opex?`<tr style="background:${hex2rgba(C.primary,0.03)};"><td style="padding:7px 10px;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">Less: Operating Expenses</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};color:#cc3333;">($${fmtNum(fin.opex)})</td></tr>`:''}
-          ${expBreakdown.map(e=>`<tr><td style="padding:5px 10px 5px 20px;border-bottom:1px solid ${hex2rgba(C.rule,0.1)};font-size:8pt;color:${C.text};opacity:0.8;">— ${e.item}</td><td style="padding:5px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.1)};font-size:8pt;">$${fmtNum(e.amount)}</td></tr>`).join('')}
-          ${fin.noi?`<tr style="background:${C.primary};"><td style="padding:9px 10px;color:#fff;font-weight:600;">Net Operating Income</td><td style="padding:9px 10px;text-align:right;color:${C.accent};font-weight:600;font-family:'${F.number||F.heading}',serif;font-size:12pt;">$${fmtNum(fin.noi)}</td></tr>`:''}
-          ${fin.finDebtService?`<tr><td style="padding:7px 10px;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">Annual Debt Service</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};">$${fmtNum(fin.finDebtService)}</td></tr>`:''}
-          ${fin.recentCapex?`<tr style="background:${hex2rgba(C.accent,0.08)};"><td style="padding:7px 10px;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};font-weight:500;">Recent CapEx</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${hex2rgba(C.rule,0.15)};font-weight:500;">${fin.recentCapex}</td></tr>`:''}
-          ${fin.additionalNotes?`<tr><td colspan="2" style="padding:7px 10px;font-size:8pt;font-style:italic;color:${C.text};opacity:0.75;">${fin.additionalNotes}</td></tr>`:''}
-        </tbody>
-      </table>
-    `;
-    pages += pageLayout(mainContent, '', false, C, pad, footer, isLandscape);
+    if(isSplit&&hp){
+      pages+=`<div class="doc-page" style="background:${C.primary};">
+        <div style="position:absolute;${imgSide}:0;top:0;width:52%;height:100%;overflow:hidden;">
+          ${pImg(hp,'100%',false)}
+          <div style="position:absolute;inset:0;background:linear-gradient(to ${txtSide},transparent 35%,${C.primary} 85%);"></div>
+        </div>
+        <div style="position:absolute;${txtSide}:0;top:0;width:52%;height:100%;padding:${padH};display:flex;flex-direction:column;justify-content:center;">
+          <div style="font-size:7.5pt;letter-spacing:2.5px;text-transform:uppercase;color:${C.accent};font-family:'${F.heading}',serif;font-weight:600;margin-bottom:14px;">${firm} · ${docLabel}</div>
+          <div style="height:${ovAbH}px;background:${C.accent};width:40px;margin-bottom:16px;border-radius:2px;"></div>
+          <div style="font-family:'${F.heading}',serif;font-size:${isLandscape?'26':'21'}pt;font-weight:${hWt};color:#fff;line-height:1.1;margin-bottom:10px;">${prop.name}</div>
+          <div style="font-size:${isLandscape?'11':'9'}pt;color:rgba(255,255,255,0.65);margin-bottom:18px;">${fullAddr}</div>
+          ${coverStats.map(([l,v])=>`<div style="margin-bottom:10px;">
+            <div style="font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${H(C.accent,0.8)};margin-bottom:2px;font-family:'${F.body}',sans-serif;">${l}</div>
+            <div style="font-size:${isLandscape?'17':'14'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${v}</div>
+          </div>`).join('')}
+          ${broker.name?`<div style="margin-top:auto;padding-top:14px;border-top:1px solid ${H(C.accent,0.3)};">
+            <div style="font-size:10pt;color:#fff;font-weight:500;font-family:'${F.body}',sans-serif;">${broker.name}</div>
+            ${broker.title?`<div style="font-size:8pt;color:${C.accent};">${broker.title}</div>`:''}
+          </div>`:''}
+        </div>
+        ${footer()}
+      </div>`;
+    } else if(isTopBand){
+      pages+=`<div class="doc-page" style="background:${C.bg};">
+        <div style="background:${C.primary};height:${isLandscape?'2.8in':'3.2in'};position:relative;overflow:hidden;">
+          ${hp?`<img src="${hp}" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:${photoOpacity};" /><div style="position:absolute;inset:0;background:linear-gradient(${C.primary}60,${C.primary}e0);"></div>`:''}
+          <div style="position:relative;z-index:2;padding:${padH};height:100%;display:flex;flex-direction:column;justify-content:flex-end;">
+            <div style="font-size:7.5pt;letter-spacing:2.5px;text-transform:uppercase;color:${C.accent};font-family:'${F.heading}',serif;font-weight:600;margin-bottom:10px;">${firm} · ${docLabel}</div>
+            <div style="font-family:'${F.heading}',serif;font-size:${isLandscape?'30':'24'}pt;font-weight:${hWt};color:#fff;line-height:1.1;margin-bottom:6px;">${prop.name}</div>
+            <div style="font-size:11pt;color:rgba(255,255,255,0.65);">${fullAddr}</div>
+          </div>
+        </div>
+        <div style="padding:${padH};">
+          <div style="display:flex;gap:${isLandscape?'0.35in':'0.2in'};flex-wrap:wrap;margin-bottom:16px;">
+            ${coverStats.map(([l,v])=>`<div><div style="font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.secondary};margin-bottom:3px;font-family:'${F.body}',sans-serif;">${l}</div><div style="font-size:${isLandscape?'20':'16'}pt;color:${C.primary};font-weight:600;font-family:'${F.number||F.heading}',serif;">${v}</div></div>`).join('')}
+          </div>
+          ${broker.name?`<div style="font-size:10pt;color:${C.primary};font-weight:500;">${broker.name}${broker.title?' · '+broker.title:''}${broker.phone?' · '+broker.phone:''}</div>`:''}
+        </div>
+        ${footer()}
+      </div>`;
+    } else {
+      // Default: full-bleed dark overlay
+      pages+=`<div class="doc-page" style="background:${C.primary};">
+        ${hp?`<div style="position:absolute;inset:0;">
+          <img src="${hp}" style="width:100%;height:100%;object-fit:cover;display:block;opacity:${photoOpacity};" />
+          <div style="position:absolute;inset:0;background:linear-gradient(160deg,${H(C.primary,0.15)} 0%,${H(C.primary,0.6)} 40%,${H(C.primary,0.97)} 100%);"></div>
+        </div>`:''}
+        <div style="position:relative;z-index:2;height:100%;display:flex;flex-direction:column;padding:${padH};padding-bottom:0;">
+          <div style="margin-bottom:auto;">
+            <div style="font-size:7.5pt;letter-spacing:3px;text-transform:uppercase;color:${C.accent};font-family:'${F.heading}',serif;font-weight:600;margin-bottom:${isLandscape?'0.22in':'0.16in'};">${firm.toUpperCase()} &nbsp;·&nbsp; ${docLabel.toUpperCase()}</div>
+            <div style="height:${ovAbH}px;background:${C.accent};width:${isLandscape?'60px':'46px'};margin-bottom:${isLandscape?'16px':'12px'};border-radius:2px;"></div>
+            <div style="font-family:'${F.heading}',serif;font-size:${isLandscape?'38':'28'}pt;font-weight:${hWt};color:#fff;line-height:1.05;margin-bottom:8px;max-width:${isLandscape?'6.5in':'4.5in'};letter-spacing:${formality==='luxury'?'-0.5px':'0'};">${prop.name}</div>
+            <div style="font-size:${isLandscape?'13':'11'}pt;color:rgba(255,255,255,0.65);margin-bottom:6px;">${fullAddr}</div>
+            ${prop.sf||prop.yearBuilt?`<div style="font-size:9pt;color:rgba(255,255,255,0.42);">${prop.sf?fmtNum(prop.sf)+' SF':''}${prop.sf&&prop.yearBuilt?' · ':''}${prop.yearBuilt?'Built '+prop.yearBuilt:''}${prop.zoning?' · '+prop.zoning:''}</div>`:'' }
+          </div>
+          <div style="border-top:1.5px solid ${H(C.accent,0.45)};padding-top:${isLandscape?'0.15in':'0.12in'};padding-bottom:${isLandscape?'0.3in':'0.25in'};display:flex;gap:${isLandscape?'0.32in':'0.2in'};flex-wrap:wrap;align-items:flex-end;">
+            ${coverStats.map(([l,v])=>`<div style="flex-shrink:0;"><div style="font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${H(C.accent,0.75)};margin-bottom:3px;font-family:'${F.body}',sans-serif;">${l}</div><div style="font-family:'${F.number||F.heading}',serif;font-size:${isLandscape?'21':'16'}pt;color:#fff;font-weight:600;line-height:1;">${v}</div></div>`).join('')}
+            ${broker.name?`<div style="margin-left:auto;text-align:right;align-self:flex-end;">
+              <div style="font-size:10pt;color:#fff;font-weight:500;font-family:'${F.body}',sans-serif;">${broker.name}</div>
+              ${broker.title?`<div style="font-size:8pt;color:${C.accent};">${broker.title}</div>`:''}
+              ${broker.phone?`<div style="font-size:8pt;color:rgba(255,255,255,0.5);">${broker.phone}</div>`:''}
+            </div>`:''}
+          </div>
+          <div class="accent-strip"></div>
+        </div>
+        ${footer()}
+      </div>`;
+    }
   }
 
-  // ===== RENT ROLL =====
-  if (sections.includes('rentroll') && rentRoll.length > 0) {
-    const rrPhoto = nextPhoto();
-    const mainContent = `
-      ${sectionHeader('Rent Roll', docTypeLabel)}
-      ${rrPhoto && photoEmphasis === 'dominant' ? `<div style="height:${isLandscape?'1.4in':'1.6in'};margin-bottom:12px;border-radius:4px;overflow:hidden;">${photoBlock(rrPhoto,'100%',photoStyle)}</div>` : ''}
-      <table style="width:100%;border-collapse:collapse;font-size:${parseFloat(bodyFontSize)-1}pt;">
+  // ── HIGHLIGHTS + EXECUTIVE SUMMARY ─────────────────────────
+  if(sections.includes('highlights')){
+    const lo=getLayout('highlights');
+    const ph=nextPhoto();
+    const hiList=ai.investmentHighlights?.length?ai.investmentHighlights:(prop.highlights?prop.highlights.split('\n').filter(Boolean):[]);
+    const finHi=ai.financialHighlights||[];
+
+    const bulletList=(items,accent=false)=>items.map(h=>
+      `<div style="display:flex;align-items:flex-start;gap:9px;padding:${density==='dense'?'5px':'7px'} 0;border-bottom:1px solid ${H(C.rule,0.1)};">
+        <div style="width:${accent?8:6}px;height:${accent?8:6}px;border-radius:50%;background:${accent?C.accent:C.secondary};margin-top:4px;flex-shrink:0;"></div>
+        <span class="body-text${accent?' hl':''}"> ${h}</span>
+      </div>`).join('');
+
+    const sideContent=ph?`
+      <div style="border-radius:${ovCorR}px;overflow:hidden;margin-bottom:10px;">${pImg(ph,isLandscape?'1.65in':'2in',false)}</div>
+      ${fin.price?sideBox('Offered At','$'+fmtNum(fin.price),fin.capRate?fin.capRate+'% Cap Rate':''):''}
+      ${fin.noi?sideBox('NOI','$'+fmtNum(fin.noi),fin.occupancy?fin.occupancy+'% Occupied':''):''}
+      ${fin.walt?sideBox('WALT',fin.walt+' Years','Weighted Avg Lease Term'):''}
+    `:'';
+
+    const mainContent=`
+      ${secHdr('Investment Highlights',docLabel)}
+      ${finHi.length?`<div style="margin-bottom:12px;">${bulletList(finHi,true)}</div>`:''}
+      ${bulletList(hiList)}
+      ${pq(ai.pullQuotes?.[0])}
+      ${ai.executiveSummary?`<div style="margin-top:12px;"><div class="eyebrow">Executive Summary</div>${divider()}<div class="body-text">${ai.executiveSummary.slice(0,density==='dense'?700:550)}</div></div>`:''}
+    `;
+    pages+=pageWrap(mainContent,sideContent,lo?.hasSidebar?'classic':undefined);
+  }
+
+  // ── PROPERTY DETAILS ────────────────────────────────────────
+  if(sections.includes('property')){
+    const lo=getLayout('property');
+    const ph=nextPhoto();
+    const rows=[['Property Name',prop.name],['Address',fullAddr],['County',prop.county],['Property Type',S.propType],['Year Built',prop.yearBuilt],['Building SF',prop.sf?fmtNum(prop.sf)+' SF':''],['Lot Size',prop.acres?prop.acres+' Acres':''],['Buildings',prop.buildings],['Suites / Units',prop.units],['Zoning',prop.zoning],['Clear Height',prop.clearHeight?prop.clearHeight+' ft':''],['Parking',prop.parking?prop.parking+' spaces':'']].filter(([,v])=>v);
+
+    // Photo position from template or prop
+    const phPos = lo?.photoPosition||'inset-right';
+    const inset = ph&&phPos.includes('inset') ? insetPh(ph,isLandscape?'42%':'38%',phPos.includes('left')?'left':'right') : '';
+    const topPh = ph&&phPos==='top' ? `<div style="height:${isLandscape?'1.8in':'2.2in'};margin-bottom:14px;border-radius:${ovCorR}px;overflow:hidden;">${pImg(ph,'100%',false)}</div>` : '';
+
+    const table=`<table style="width:100%;border-collapse:collapse;font-size:${bfs-1}pt;clear:both;">
+      ${rows.map((r,i)=>`<tr style="background:${i%2===0?H(C.primary,0.04):'transparent'};">
+        <td style="padding:${density==='dense'?'6':'8'}px 10px;font-weight:600;color:${C.primary};width:36%;border-bottom:1px solid ${H(C.rule,0.12)};">${r[0]}</td>
+        <td style="padding:${density==='dense'?'6':'8'}px 10px;border-bottom:1px solid ${H(C.rule,0.12)};">${r[1]}</td>
+      </tr>`).join('')}
+    </table>`;
+
+    const sideContent=ph&&!phPos.includes('inset')&&!['top'].includes(phPos)?`
+      <div style="border-radius:${ovCorR}px;overflow:hidden;margin-bottom:10px;">${pImg(ph,isLandscape?'1.8in':'2.2in',false)}</div>
+      ${ai.propertyDescription?`<div class="body-text" style="font-size:${bfs-1}pt;">${ai.propertyDescription.slice(0,280)}</div>`:''}
+    `:'';
+
+    const main=`
+      ${secHdr('Property Details',docLabel)}
+      ${topPh}
+      ${ph&&phPos.includes('inset')?inset:''}
+      ${ai.propertyDescription&&!phPos.includes('right')?`<div class="body-text" style="margin-bottom:14px;">${ai.propertyDescription.slice(0,density==='dense'?500:380)}</div>`:''}
+      ${table}
+      ${pq(ai.pullQuotes?.[1])}
+    `;
+    pages+=pageWrap(main,sideContent,lo?.hasSidebar?'classic':undefined);
+  }
+
+  // ── PHOTOS ──────────────────────────────────────────────────
+  if(sections.includes('photos')&&photos.length>0){
+    const batch=[]; let p;
+    while((p=nextPhoto())&&batch.length<6) batch.push(p);
+    if(!batch.length&&photos[0]) batch.push(photos[0]);
+    pages+=photoPage(batch);
+
+    // If more photos remain, add a second photo page
+    const batch2=[]; let p2;
+    while((p2=nextPhoto())&&batch2.length<6) batch2.push(p2);
+    if(batch2.length) pages+=photoPage(batch2);
+  }
+
+  // ── LOCATION + MAP ──────────────────────────────────────────
+  if(sections.includes('location')){
+    const lo=getLayout('location');
+    const locPh=nextPhoto();
+    const locText=ai.locationOverview||`${prop.city}, ${prop.state} offers strong fundamentals for commercial real estate investment. The subject property benefits from its strategic location within the ${prop.city} submarket, providing excellent access to major thoroughfares and a deep regional tenant base.`;
+    const mktCtx=ai.marketContext||'';
+
+    // Use real Mapbox snapshot if saved from Map Generator, else canvas fallback
+    const hasRealMap = !!S.mapSnapshot;
+    const mapHtml = hasRealMap
+      ? `<img src="${S.mapSnapshot}" style="width:100%;border-radius:${ovCorR}px;display:block;margin-top:10px;" />`
+      : `<canvas id="loc-map" width="${isLandscape?320:280}" height="190" style="border-radius:${ovCorR}px;display:block;width:100%;margin-top:10px;"></canvas>${mapCanvasScript('loc-map',prop.address)}`;
+    const mapCaption = hasRealMap
+      ? `<div style="margin-top:5px;font-size:7pt;color:${H(C.text,0.6)};font-style:italic;">Property location · ${parseFloat(document.getElementById('map-radius')?.value||1)} mile radius shown</div>`
+      : `<div style="margin-top:5px;font-size:7pt;color:${H(C.text,0.6)};font-style:italic;">Approximate location map</div>`;
+
+    // Build comp summary if comps exist
+    const compSummary = MAP.comps.length
+      ? `<div style="margin-top:10px;"><div style="font-size:7pt;text-transform:uppercase;letter-spacing:1px;color:${C.secondary};margin-bottom:6px;font-weight:600;">Comparable Properties</div>
+          ${MAP.comps.slice(0,4).map(c=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid ${H(C.rule,0.1)};font-size:8pt;">
+            <span style="font-weight:500;color:${C.primary};">${c.name}</span>
+            <span style="color:${C.secondary};">${[c.price,c.capRate].filter(Boolean).join(' · ')}</span>
+          </div>`).join('')}
+        </div>`
+      : '';
+
+    const sideContent=useSidebar?`
+      ${mapHtml}
+      ${mapCaption}
+      ${locPh?`<div style="margin-top:10px;border-radius:${ovCorR}px;overflow:hidden;">${pImg(locPh,'1.3in',false)}</div>`:''}
+      <div style="margin-top:10px;background:${H(C.secondary,0.08)};border-left:3px solid ${C.secondary};padding:8px 10px;border-radius:0 ${ovCorR}px ${ovCorR}px 0;">
+        <div style="font-size:7pt;text-transform:uppercase;letter-spacing:1px;color:${C.secondary};margin-bottom:3px;font-family:'${F.body}',sans-serif;">Location</div>
+        <div style="font-size:8.5pt;color:${C.text};line-height:1.5;">${fullAddr}${prop.county?'<br>'+prop.county:''}</div>
+      </div>
+      ${compSummary}
+    `:'';
+
+    const main=`
+      ${secHdr('Location & Market Overview',docLabel)}
+      ${locPh&&!useSidebar?`<div style="height:${isLandscape?'1.7in':'2in'};margin-bottom:13px;border-radius:${ovCorR}px;overflow:hidden;">${pImg(locPh,'100%',false)}</div>`:''}
+      <div class="body-text">${locText}</div>
+      ${mktCtx?`<div class="callout-box"><div class="body-text" style="font-style:italic;">${mktCtx}</div></div>`:''}
+      ${!useSidebar?`${mapHtml}${mapCaption}${compSummary}`:''}
+    `;
+    pages+=pageWrap(main,sideContent,lo?.hasSidebar?'classic':undefined);
+  }
+
+  // ── FINANCIAL SUMMARY ────────────────────────────────────────
+  if(sections.includes('financials')){
+    const lo=getLayout('financials');
+    const ef=S.extractedFin||{};
+    const cards=[
+      fin.price    &&['Asking Price','$'+fmtNum(fin.price)],
+      fin.ppsf     &&['Price / SF',  '$'+fin.ppsf],
+      fin.noi      &&['NOI',         '$'+fmtNum(fin.noi)],
+      fin.capRate  &&['Cap Rate',    fin.capRate+'%'],
+      fin.occupancy&&['Occupancy',   fin.occupancy+'%'],
+      fin.walt     &&['WALT',        fin.walt+' Yrs'],
+      (ef.finDscr||fin.dscr)&&['DSCR',ef.finDscr||fin.dscr||'—'],
+      ef.finCashOnCash&&['Cash-on-Cash',ef.finCashOnCash],
+    ].filter(Boolean);
+
+    const expBD=(ef.expenseBreakdown||[]).filter(e=>e.item&&e.amount);
+    const rowH=`${pp.tableRowHeightPt||20}pt`;
+
+    const incomeTable=`<table style="width:100%;border-collapse:collapse;font-size:${bfs-0.5}pt;">
+      <thead><tr style="background:${C.primary};">
+        <th style="padding:7px 10px;color:#fff;text-align:left;font-weight:500;font-size:7.5pt;font-family:'${F.body}',sans-serif;">Income Statement</th>
+        <th style="padding:7px 10px;color:#fff;text-align:right;font-weight:500;font-size:7.5pt;font-family:'${F.body}',sans-serif;">Annual</th>
+      </tr></thead>
+      <tbody>
+        ${fin.gpr?`<tr><td style="padding:7px 10px;border-bottom:1px solid ${H(C.rule,0.13)};">Gross Potential Rent</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${H(C.rule,0.13)};">$${fmtNum(fin.gpr)}</td></tr>`:''}
+        ${fin.vacancy?`<tr style="background:${H(C.primary,0.03)};"><td style="padding:7px 10px;border-bottom:1px solid ${H(C.rule,0.13)};">Less: Vacancy (${fin.vacancy}%)</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${H(C.rule,0.13)};color:#cc3333;">($${fmtNum(Math.round(parseFloat(fin.gpr||0)*parseFloat(fin.vacancy||0)/100))})</td></tr>`:''}
+        ${fin.egi?`<tr><td style="padding:7px 10px;border-bottom:1px solid ${H(C.rule,0.13)};">Effective Gross Income</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${H(C.rule,0.13)};">$${fmtNum(fin.egi)}</td></tr>`:''}
+        ${fin.opex?`<tr style="background:${H(C.primary,0.03)};"><td style="padding:7px 10px;border-bottom:1px solid ${H(C.rule,0.13)};">Less: Operating Expenses</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${H(C.rule,0.13)};color:#cc3333;">($${fmtNum(fin.opex)})</td></tr>`:''}
+        ${expBD.map(e=>`<tr><td style="padding:4px 10px 4px 22px;border-bottom:1px solid ${H(C.rule,0.08)};font-size:${bfs-1.5}pt;opacity:0.8;">— ${e.item}</td><td style="padding:4px 10px;text-align:right;border-bottom:1px solid ${H(C.rule,0.08)};font-size:${bfs-1.5}pt;">$${fmtNum(e.amount)}</td></tr>`).join('')}
+        ${fin.noi?`<tr class="fin-row-hi"><td style="padding:8px 10px;">Net Operating Income</td><td class="fin-val" style="padding:8px 10px;text-align:right;">$${fmtNum(fin.noi)}</td></tr>`:''}
+        ${fin.debtService?`<tr><td style="padding:7px 10px;border-bottom:1px solid ${H(C.rule,0.13)};">Annual Debt Service</td><td style="padding:7px 10px;text-align:right;border-bottom:1px solid ${H(C.rule,0.13)};">$${fmtNum(fin.debtService)}</td></tr>`:''}
+        ${ef.recentCapex?`<tr style="background:${H(C.accent,0.1)};"><td style="padding:7px 10px;font-weight:500;">Recent CapEx</td><td style="padding:7px 10px;text-align:right;font-weight:500;">${ef.recentCapex}</td></tr>`:''}
+        ${ef.additionalNotes?`<tr><td colspan="2" style="padding:7px 10px;font-size:${bfs-1.5}pt;font-style:italic;opacity:0.7;">${ef.additionalNotes}</td></tr>`:''}
+      </tbody>
+    </table>`;
+
+    const main=`
+      ${secHdr('Financial Summary',docLabel)}
+      ${statCards(cards.slice(0,isLandscape?4:3))}
+      ${cards.length>(isLandscape?4:3)?statCards(cards.slice(isLandscape?4:3)):''}
+      ${pq(ai.pullQuotes?.[2])}
+      ${incomeTable}
+    `;
+    pages+=pageWrap(main,'',lo?.hasSidebar?'classic':undefined);
+  }
+
+  // ── RENT ROLL ─────────────────────────────────────────────
+  if(sections.includes('rentroll')&&rentRoll.length>0){
+    const main=`
+      ${secHdr('Rent Roll',docLabel)}
+      <table style="width:100%;border-collapse:collapse;font-size:${bfs-1}pt;">
         <thead><tr style="background:${C.primary};">
-          ${['Tenant','Suite','SF','Lease Start','Lease End','Annual Rent','$/SF','Type'].map(h=>`<th style="padding:7px 9px;color:#fff;text-align:left;font-weight:500;font-size:7pt;">${h}</th>`).join('')}
+          ${['Tenant','Suite','SF','Lease Start','Lease End','Annual Rent','$/SF'].map(h=>`<th style="padding:7px 9px;color:#fff;text-align:left;font-weight:500;font-size:7pt;font-family:'${F.body}',sans-serif;">${h}</th>`).join('')}
         </tr></thead>
         <tbody>
-          ${rentRoll.map((r,i) => {
-            const rpsf = r.sf && r.annualRent ? '$'+(parseFloat(r.annualRent)/parseFloat(r.sf)).toFixed(2) : '—';
-            const isSignificant = parseFloat(r.annualRent) > parseFloat(fin.gpr||0) * 0.3;
-            return `<tr style="background:${i%2===0?hex2rgba(C.primary,0.04):'transparent'}${isSignificant?';border-left:3px solid '+C.accent:''};">
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};font-weight:${isSignificant?'600':'400'};color:${C.primary};">${r.tenant}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};">${r.suite||'—'}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};">${r.sf?fmtNum(r.sf):'—'}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};">${r.leaseStart||'—'}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};">${r.leaseEnd||'—'}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};font-family:'${F.number||F.heading}',serif;font-weight:${isSignificant?'600':'400'};">${r.annualRent?'$'+fmtNum(r.annualRent):'—'}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};font-family:'${F.number||F.heading}',serif;">${rpsf}</td>
-              <td style="padding:7px 9px;border-bottom:1px solid ${hex2rgba(C.rule,0.12)};font-size:7.5pt;">${r.leaseType||'—'}</td>
+          ${rentRoll.map((r,i)=>{
+            const rpsf=r.sf&&r.annualRent?'$'+(parseFloat(r.annualRent)/parseFloat(r.sf)).toFixed(2):'—';
+            const anchor=parseFloat(r.annualRent)>parseFloat(fin.gpr||0)*0.28;
+            return `<tr style="background:${i%2===0?H(C.primary,0.04):'transparent'};${anchor?`border-left:3px solid ${C.accent};`:''}" >
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};font-weight:${anchor?'600':'400'};color:${anchor?C.primary:C.text};">${r.tenant}</td>
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};">${r.suite||'—'}</td>
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};">${r.sf?fmtNum(r.sf):'—'}</td>
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};">${r.leaseStart||'—'}</td>
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};">${r.leaseEnd||'—'}</td>
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};font-family:'${F.number||F.heading}',serif;font-weight:${anchor?'600':'400'};">${r.annualRent?'$'+fmtNum(r.annualRent):'—'}</td>
+              <td style="padding:7px 9px;border-bottom:1px solid ${H(C.rule,0.1)};font-family:'${F.number||F.heading}',serif;">${rpsf}</td>
             </tr>`;
           }).join('')}
-          ${rentRoll.length > 1 && fin.gpr ? `<tr style="background:${C.primary};">
-            <td colspan="2" style="padding:7px 9px;color:#fff;font-weight:600;">Total</td>
+          ${rentRoll.length>1?`<tr style="background:${C.primary};">
+            <td colspan="2" style="padding:7px 9px;color:#fff;font-weight:600;">Totals</td>
             <td style="padding:7px 9px;color:#fff;">${fmtNum(rentRoll.reduce((s,r)=>s+parseFloat(r.sf||0),0))} SF</td>
-            <td colspan="3" style="padding:7px 9px;color:${C.accent};font-weight:600;font-family:'${F.number||F.heading}',serif;">$${fmtNum(fin.gpr)}/yr</td>
+            <td colspan="2"></td>
+            <td style="padding:7px 9px;color:${C.accent};font-family:'${F.number||F.heading}',serif;font-weight:600;">${fin.gpr?'$'+fmtNum(fin.gpr)+'/yr':''}</td>
             <td style="padding:7px 9px;color:#fff;">${fin.ppsf?'$'+fin.ppsf:''}</td>
-            <td></td>
-          </tr>` : ''}
+          </tr>`:''}
         </tbody>
       </table>
-      ${ai.tenantSummary ? `<div style="margin-top:12px;padding:10px 12px;background:${hex2rgba(C.secondary,0.07)};border-radius:5px;border-left:3px solid ${C.secondary};"><div class="body-text" style="font-size:9pt;">${ai.tenantSummary.slice(0,300)}</div></div>` : ''}
+      ${ai.tenantSummary?`<div class="callout-box" style="margin-top:10px;"><div class="body-text" style="font-size:${bfs-1}pt;">${ai.tenantSummary.slice(0,280)}</div></div>`:''}
     `;
-    pages += pageLayout(mainContent, '', false, C, pad, footer, isLandscape);
+    pages+=pageWrap(main,'');
   }
 
-  // ===== TENANT SUMMARY (standalone) =====
-  if (sections.includes('tenants') && !sections.includes('rentroll')) {
-    const tenText = ai.tenantSummary || `The property is ${fin.occupancy?fin.occupancy+'% occupied':'occupied'}${fin.walt?' with a weighted average lease term of '+fin.walt+' years':''}.`;
-    pages += pageLayout(`${sectionHeader('Tenant Summary',docTypeLabel)}<div class="body-text">${tenText}</div>`, '', false, C, pad, footer, isLandscape);
+  // ── TENANT SUMMARY (standalone, no rent roll) ─────────────
+  if(sections.includes('tenants')&&!sections.includes('rentroll')){
+    const t=ai.tenantSummary||`The property is ${fin.occupancy?fin.occupancy+'% occupied':'currently occupied'}${fin.walt?' with a weighted average lease term of '+fin.walt+' years':''}.`;
+    pages+=pageWrap(`${secHdr('Tenant Summary',docLabel)}<div class="body-text">${t}</div>`,'');
   }
 
-  // ===== VALUATION =====
-  if (sections.includes('valuation')) {
-    const valText = ai.valuationNarrative || `${docTypeLabel === 'Offering Memorandum' ? 'The Seller is offering the property' : 'Based on our analysis, the estimated value is'} ${fin.price?'$'+fmtNum(fin.price):'to be determined'}${fin.capRate?', representing a '+fin.capRate+'% capitalization rate':''}${fin.noi?' on an NOI of $'+fmtNum(fin.noi):''}. ${ai.marketContext||''}`;
-    const valPhoto = nextPhoto();
+  // ── VALUATION ────────────────────────────────────────────
+  if(sections.includes('valuation')){
+    const vText=ai.valuationNarrative||`${S.docType==='om'?'The Seller is offering the property':'Based on our analysis, the estimated value is'} ${fin.price?'$'+fmtNum(fin.price):'to be determined'}${fin.capRate?', representing a '+fin.capRate+'% capitalization rate':''}${fin.noi?' on an NOI of $'+fmtNum(fin.noi):''}. ${ai.marketContext||''}`;
+    const valPh=nextPhoto();
+    const valBox=(fin.price||fin.capRate)?`
+      <div style="background:${C.primary};border-radius:${ovCorR}px;padding:${isLandscape?'16px 20px':'12px 16px'};margin-top:14px;display:flex;justify-content:space-around;align-items:center;flex-wrap:wrap;gap:12px;">
+        ${fin.price?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:3px;font-family:'${F.body}',sans-serif;">Offered At</div><div style="font-size:${isLandscape?'26':'20'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${fmtDollar(fin.price)||''}</div></div>`:''}
+        ${fin.ppsf?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:3px;font-family:'${F.body}',sans-serif;">Price / SF</div><div style="font-size:${isLandscape?'20':'16'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">$${fin.ppsf}</div></div>`:''}
+        ${fin.capRate?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:3px;font-family:'${F.body}',sans-serif;">Cap Rate</div><div style="font-size:${isLandscape?'20':'16'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${fin.capRate}%</div></div>`:''}
+        ${fin.noi?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:3px;font-family:'${F.body}',sans-serif;">NOI</div><div style="font-size:${isLandscape?'20':'16'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${fmtDollar(fin.noi)||''}</div></div>`:''}
+      </div>`:'' ;
 
-    const valBox = (fin.price || fin.capRate) ? `
-      <div style="background:${C.primary};border-radius:8px;padding:${isLandscape?'18px 22px':'14px 16px'};margin-top:14px;display:flex;justify-content:space-around;align-items:center;flex-wrap:wrap;gap:14px;">
-        ${fin.price?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:4px;">Offered At</div><div style="font-size:${isLandscape?'28':'22'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">$${fmtNum(fin.price)}</div></div>`:''}
-        ${fin.ppsf?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:4px;">Price / SF</div><div style="font-size:${isLandscape?'22':'17'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">$${fin.ppsf}</div></div>`:''}
-        ${fin.capRate?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:4px;">Cap Rate</div><div style="font-size:${isLandscape?'22':'17'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">${fin.capRate}%</div></div>`:''}
-        ${fin.noi?`<div style="text-align:center;"><div style="font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:${C.accent};margin-bottom:4px;">NOI</div><div style="font-size:${isLandscape?'22':'17'}pt;color:#fff;font-weight:600;font-family:'${F.number||F.heading}',serif;">$${fmtNum(fin.noi)}</div></div>`:''}
-      </div>` : '';
-
-    const mainContent = `
-      ${sectionHeader('Valuation & Pricing Guidance', docTypeLabel)}
-      ${valPhoto ? `<div style="height:${isLandscape?'1.6in':'2in'};margin-bottom:12px;border-radius:4px;overflow:hidden;">${photoBlock(valPhoto,'100%',photoStyle)}</div>` : ''}
-      <div class="body-text">${valText}</div>
+    const main=`
+      ${secHdr('Valuation & Pricing',docLabel)}
+      ${valPh?`<div style="height:${isLandscape?'1.5in':'1.8in'};margin-bottom:12px;border-radius:${ovCorR}px;overflow:hidden;">${pImg(valPh,'100%',false)}</div>`:''}
+      <div class="body-text">${vText}</div>
       ${valBox}
     `;
-    pages += pageLayout(mainContent, '', false, C, pad, footer, isLandscape);
+    pages+=pageWrap(main,'');
   }
 
-  // ===== DISCLAIMER =====
-  if (sections.includes('disclaimer')) {
-    const mainContent = `
-      ${sectionHeader('Disclaimer & Confidentiality', docTypeLabel)}
+  // ── TEAM PAGE ────────────────────────────────────────────
+  if(sections.includes('team')&&selBrokers.length>0){
+    const cols=Math.min(selBrokers.length,isLandscape?3:2);
+    const teamCards=selBrokers.map(b=>`
+      <div style="background:${H(C.primary,0.04)};border:1px solid ${H(C.rule,0.18)};border-radius:${ovCorR}px;padding:16px;display:flex;flex-direction:column;align-items:center;text-align:center;">
+        ${b.photo
+          ?`<img src="${b.photo}" style="width:72px;height:72px;border-radius:50%;object-fit:cover;border:3px solid ${C.accent};margin-bottom:10px;" />`
+          :`<div style="width:72px;height:72px;border-radius:50%;background:${C.primary};border:3px solid ${C.accent};margin:0 auto 10px;display:flex;align-items:center;justify-content:center;font-family:'${F.heading}',serif;font-size:26px;font-weight:600;color:#fff;">${(b.name||'?')[0]}</div>`}
+        <div style="font-family:'${F.heading}',serif;font-size:13pt;font-weight:500;color:${C.primary};margin-bottom:3px;">${b.name}</div>
+        <div style="font-size:9pt;color:${C.secondary};margin-bottom:7px;">${b.title||''}</div>
+        ${b.spec?`<div style="font-size:8pt;color:${H(C.text,0.7)};margin-bottom:7px;">${b.spec}</div>`:''}
+        <div style="font-size:8.5pt;color:${C.text};line-height:1.7;">${[b.phone,b.email,b.license].filter(Boolean).join('<br>')}</div>
+        ${b.bio?`<div style="font-size:8pt;color:${H(C.text,0.65)};line-height:1.6;margin-top:8px;border-top:1px solid ${H(C.rule,0.15)};padding-top:8px;">${b.bio.slice(0,200)}</div>`:''}
+      </div>`).join('');
+
+    pages+=pageWrap(`
+      ${secHdr('Our Team',docLabel)}
+      <div style="display:grid;grid-template-columns:repeat(${cols},1fr);gap:${isLandscape?'0.22in':'0.18in'};">${teamCards}</div>
+    `,'');
+  }
+
+  // ── DISCLAIMER ──────────────────────────────────────────
+  if(sections.includes('disclaimer')){
+    pages+=pageWrap(`
+      ${secHdr('Disclaimer & Confidentiality',docLabel)}
       <div style="font-size:8.5pt;color:${C.text};opacity:0.65;line-height:1.8;">${disclaimer}</div>
-      ${broker.name ? `<div style="margin-top:18px;padding:12px 14px;background:${hex2rgba(C.primary,0.05)};border-radius:6px;border-top:3px solid ${C.accent};">
-        <div style="font-weight:600;color:${C.primary};font-size:10pt;">${broker.name}</div>
+      ${broker.name?`<div style="margin-top:18px;padding:12px 14px;background:${H(C.primary,0.05)};border-radius:${ovCorR}px;border-top:3px solid ${C.accent};">
+        <div style="font-weight:600;color:${C.primary};font-size:10pt;font-family:'${F.body}',sans-serif;">${broker.name}</div>
         ${broker.title?`<div style="color:${C.secondary};font-size:9pt;">${broker.title}</div>`:''}
-        <div style="margin-top:6px;font-size:8.5pt;color:${C.text};">${[broker.phone,broker.email,broker.license].filter(Boolean).join(' · ')}</div>
-        <div style="margin-top:4px;font-size:8.5pt;color:${C.text};opacity:0.7;">${firmName} · ${officeCity}</div>
-      </div>` : ''}
-    `;
-    pages += pageLayout(mainContent, '', false, C, pad, footer, isLandscape);
+        <div style="margin-top:5px;font-size:8.5pt;color:${C.text};">${[broker.phone,broker.email,broker.license].filter(Boolean).join(' · ')}</div>
+        <div style="margin-top:3px;font-size:8.5pt;color:${H(C.text,0.6)};">${firm} · ${city}</div>
+      </div>`:''}
+    `,'');
   }
 
   return pages;
 }
 
-// ============ PAGE LAYOUT HELPER ============
-function pageLayout(mainContent, sideContent, useSidebar, C, pad, footerFn, isLandscape) {
-  const hex2rgba = (hex, alpha) => {
-    try { const r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16); return `rgba(${r},${g},${b},${alpha})`; } catch(e) { return hex; }
-  };
-  const sideW = isLandscape ? '2.0in' : '1.6in';
 
-  if (useSidebar && sideContent) {
-    return `<div class="doc-page">
-      <div style="height:calc(100% - 26px);display:flex;gap:0;overflow:hidden;">
-        <div style="flex:1;padding:${pad.h};overflow:hidden;">${mainContent}</div>
-        <div style="width:${sideW};flex-shrink:0;padding:${pad.h} ${pad.v} ${pad.h} 0;border-left:1.5px solid ${hex2rgba(C.rule,0.15)};overflow:hidden;">${sideContent}</div>
-      </div>
-      ${footerFn()}
-    </div>`;
+
+// ══════════════════════════════════════════════════════════════
+// SESSION 4 — Map Generator (Mapbox GL JS)
+// Full implementation: geocoding, radius circles, amenity search
+// via Mapbox Places API, comp pinning, custom styled markers,
+// pin management, and canvas export.
+// ══════════════════════════════════════════════════════════════
+
+const MAP = {
+  instance:      null,
+  token:         '',
+  center:        [-104.9903, 39.7392], // Denver default
+  zoom:          13,
+  subjectLng:    null,
+  subjectLat:    null,
+  subjectMarker: null,
+  radiusLayerId: 'radius-layer',
+  pins:          [],   // {id, name, address, lng, lat, color, type, marker}
+  comps:         [],   // {id, name, address, price, sf, ppsf, capRate, type, color, lng, lat, marker}
+  nextId:        1,
+};
+
+// Marker colours by type
+const PIN_COLORS = {
+  subject:  '#001a4d',
+  amenity:  '#1D9E75',
+  comp_sale:'#D85A30',
+  comp_lease:'#7F77DD',
+  comp_active:'#F5A623',
+  custom:   '#0057b8',
+};
+
+// ── Map initialisation ───────────────────────────────────────
+async function initMap() {
+  const container = document.getElementById('mapbox-container');
+  if (!container) return;
+  if (MAP.instance) { MAP.instance.resize(); return; }
+
+  // Load token from server if not already loaded
+  if (!MAP.token) {
+    try {
+      const r = await fetch('/api/config');
+      const d = await r.json();
+      MAP.token = d.mapboxToken || '';
+    } catch (e) {}
   }
-  return `<div class="doc-page">
-    <div style="height:calc(100% - 26px);padding:${pad.h};overflow:hidden;">${mainContent}</div>
-    ${footerFn()}
-  </div>`;
+
+  const overlay = document.getElementById('map-overlay-msg');
+
+  if (!MAP.token) {
+    if (overlay) overlay.innerHTML = `
+      <div style="font-size:13px;color:#cc3333;font-weight:500;">Mapbox token not configured</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">Add <code>MAPBOX_TOKEN</code> to your Render environment variables, then redeploy.</div>`;
+    return;
+  }
+
+  if (overlay) overlay.style.display = 'none';
+
+  mapboxgl.accessToken = MAP.token;
+
+  MAP.instance = new mapboxgl.Map({
+    container: 'mapbox-container',
+    style: 'mapbox://styles/mapbox/streets-v12',
+    center: MAP.center,
+    zoom: MAP.zoom,
+    attributionControl: false,
+  });
+
+  MAP.instance.addControl(new mapboxgl.NavigationControl({ showCompass: true }), 'top-right');
+  MAP.instance.addControl(new mapboxgl.ScaleControl({ unit: 'imperial' }), 'bottom-left');
+  MAP.instance.addControl(new mapboxgl.AttributionControl({ compact: true }), 'bottom-right');
+
+  MAP.instance.on('load', () => {
+    // Add radius source/layer (empty until subject is set)
+    MAP.instance.addSource('radius', { type: 'geojson', data: emptyGeoJson() });
+    MAP.instance.addLayer({ id: 'radius-fill', type: 'fill', source: 'radius', paint: { 'fill-color': '#0057b8', 'fill-opacity': 0.06 } });
+    MAP.instance.addLayer({ id: 'radius-line', type: 'line', source: 'radius', paint: { 'line-color': '#c8a96e', 'line-width': 2, 'line-dasharray': [5, 3] } });
+  });
 }
+
+function emptyGeoJson() {
+  return { type: 'FeatureCollection', features: [] };
+}
+
+// ── Subject property geocoding ───────────────────────────────
+async function geocodeAddress() {
+  const addr = document.getElementById('map-address')?.value?.trim();
+  if (!addr) return toast('Enter an address first');
+  if (!MAP.token) return toast('Mapbox token not configured');
+  if (!MAP.instance) { await initMap(); if (!MAP.instance) return; }
+
+  try {
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(addr)}.json?access_token=${MAP.token}&limit=1&country=us`;
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!d.features?.length) return toast('Address not found — try a more specific address');
+
+    const [lng, lat] = d.features[0].center;
+    const placeName = d.features[0].place_name;
+    MAP.subjectLng = lng;
+    MAP.subjectLat = lat;
+
+    MAP.instance.flyTo({ center: [lng, lat], zoom: 14, speed: 1.2 });
+
+    // Remove old subject marker
+    if (MAP.subjectMarker) MAP.subjectMarker.remove();
+
+    // Create styled subject marker
+    const el = document.createElement('div');
+    el.style.cssText = `width:20px;height:20px;border-radius:50%;background:${PIN_COLORS.subject};border:3px solid #c8a96e;box-shadow:0 2px 8px rgba(0,0,0,0.35);cursor:pointer;`;
+    MAP.subjectMarker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([lng, lat])
+      .setPopup(new mapboxgl.Popup({ offset: 25, maxWidth: '260px' }).setHTML(
+        `<div style="font-family:Inter,sans-serif;"><div style="font-weight:600;color:#0a1628;margin-bottom:3px;">Subject Property</div><div style="font-size:11px;color:#4a5a7a;">${placeName}</div></div>`
+      ))
+      .addTo(MAP.instance);
+
+    updateRadiusCircle();
+    renderPinsList();
+    toast('Location set — radius circle drawn');
+  } catch (e) {
+    toast('Geocoding failed: ' + e.message);
+  }
+}
+
+// ── Radius circle ────────────────────────────────────────────
+function updateRadius() { updateRadiusCircle(); }
+
+function updateRadiusCircle() {
+  if (!MAP.instance || !MAP.subjectLng || !MAP.subjectLat) return;
+  if (!MAP.instance.getSource('radius')) return;
+
+  const radiusMi = parseFloat(document.getElementById('map-radius')?.value) || 1;
+  const radiusKm = radiusMi * 1.60934;
+  const center = [MAP.subjectLng, MAP.subjectLat];
+  const points = 80;
+
+  const coords = Array.from({ length: points + 1 }, (_, i) => {
+    const angle = (i / points) * 2 * Math.PI;
+    const dx = (radiusKm / 111.32) / Math.cos(MAP.subjectLat * Math.PI / 180) * Math.cos(angle);
+    const dy = (radiusKm / 110.574) * Math.sin(angle);
+    return [center[0] + dx, center[1] + dy];
+  });
+
+  MAP.instance.getSource('radius').setData({
+    type: 'Feature',
+    geometry: { type: 'Polygon', coordinates: [coords] },
+  });
+
+  // Update radius label
+  const label = document.getElementById('map-radius');
+  if (label) label.title = `${radiusMi} mile radius`;
+}
+
+// ── Map style ────────────────────────────────────────────────
+function changeMapStyle(styleId) {
+  if (!MAP.instance) return;
+  MAP.instance.setStyle(`mapbox://styles/${styleId}`);
+  // Re-add radius source after style load
+  MAP.instance.once('style.load', () => {
+    MAP.instance.addSource('radius', { type: 'geojson', data: emptyGeoJson() });
+    MAP.instance.addLayer({ id: 'radius-fill', type: 'fill', source: 'radius', paint: { 'fill-color': '#0057b8', 'fill-opacity': 0.06 } });
+    MAP.instance.addLayer({ id: 'radius-line', type: 'line', source: 'radius', paint: { 'line-color': '#c8a96e', 'line-width': 2, 'line-dasharray': [5, 3] } });
+    if (MAP.subjectLng) updateRadiusCircle();
+  });
+}
+
+// ── Amenity search (Mapbox Places API) ──────────────────────
+async function searchNearby() {
+  const query = document.getElementById('amenity-input')?.value?.trim();
+  if (!query) return;
+  if (!MAP.subjectLng) return toast('Set a subject property location first');
+  if (!MAP.instance) return;
+
+  const resultsEl = document.getElementById('amenity-results');
+  if (resultsEl) resultsEl.innerHTML = `<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">${spinHTML()}Searching nearby...</div>`;
+
+  const radiusMi = parseFloat(document.getElementById('map-radius')?.value || 1);
+  const radiusM  = Math.round(radiusMi * 1609);
+  let results = [];
+
+  // ── Try Mapbox Places first ──────────────────────────────────
+  if (MAP.token) {
+    try {
+      const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(query)}.json?access_token=${MAP.token}&proximity=${MAP.subjectLng},${MAP.subjectLat}&bbox=${bboxFromCenter(MAP.subjectLng,MAP.subjectLat,radiusM)}&limit=10&types=poi,address`;
+      const r = await fetch(url);
+      const d = await r.json();
+      if (d.features?.length) {
+        results = d.features.map(f => ({
+          name: f.text || f.place_name.split(',')[0],
+          address: f.place_name,
+          lng: f.center[0],
+          lat: f.center[1],
+          dist: distanceMi(MAP.subjectLat, MAP.subjectLng, f.center[1], f.center[0]),
+        }));
+      }
+    } catch (e) { /* fall through to Google */ }
+  }
+
+  // ── Fall back to Google Places via server proxy ───────────────
+  if (results.length < 3) {
+    try {
+      const r = await fetch('/api/places-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, lat: MAP.subjectLat, lng: MAP.subjectLng, radius: radiusM }),
+      });
+      const d = await r.json();
+      if (d.ok && d.results?.length) {
+        // Merge with mapbox results, deduplicate by name proximity
+        const googleResults = d.results
+          .filter(g => g.lat && g.lng)
+          .map(g => ({
+            name: g.name,
+            address: g.address,
+            lng: g.lng,
+            lat: g.lat,
+            dist: distanceMi(MAP.subjectLat, MAP.subjectLng, g.lat, g.lng),
+            rating: g.rating,
+          }));
+        // Only add Google results not already in Mapbox results
+        googleResults.forEach(g => {
+          if (!results.some(m => m.name.toLowerCase()===g.name.toLowerCase())) {
+            results.push(g);
+          }
+        });
+      }
+    } catch (e) { /* Google not configured — that's ok */ }
+  }
+
+  // ── Sort by distance ─────────────────────────────────────────
+  results.sort((a, b) => (a.dist||0) - (b.dist||0));
+
+  if (!results.length) {
+    if (resultsEl) resultsEl.innerHTML = '<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No results found. Try a different search term.</div>';
+    return;
+  }
+
+  if (resultsEl) {
+    resultsEl.innerHTML = results.slice(0, 10).map(f => {
+      const safeName = (f.name||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+      const safeAddr = (f.address||'').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+      const distStr  = f.dist != null ? `${f.dist.toFixed(2)} mi` : '';
+      const rating   = f.rating ? ` · ★${f.rating}` : '';
+      return `<div class="amenity-result-item">
+        <div style="flex:1;">
+          <div class="amenity-name">${f.name}</div>
+          <div class="amenity-addr">${(f.address||'').slice(0,55)}${(f.address||'').length>55?'...':''} ${distStr?'· '+distStr:''}${rating}</div>
+        </div>
+        <button class="amenity-add-btn" onclick="addAmenityPin('${safeName}','${safeAddr}',${f.lng},${f.lat})">+ Pin</button>
+      </div>`;
+    }).join('');
+  }
+}
+
+function quickSearch(type) {
+  const el = document.getElementById('amenity-input');
+  if (el) el.value = type;
+  searchNearby();
+}
+
+// Compute bounding box string for Mapbox API
+function bboxFromCenter(lng, lat, radiusM) {
+  const latDeg = radiusM / 111320;
+  const lngDeg = radiusM / (111320 * Math.cos(lat * Math.PI / 180));
+  return `${lng-lngDeg},${lat-latDeg},${lng+lngDeg},${lat+latDeg}`;
+}
+
+// Haversine distance in miles
+function distanceMi(lat1, lng1, lat2, lng2) {
+  const R = 3958.8;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ── Add amenity pin ──────────────────────────────────────────
+function addAmenityPin(name, address, lng, lat) {
+  if (!MAP.instance) return;
+  const color = PIN_COLORS.amenity;
+  const el = document.createElement('div');
+  el.style.cssText = `width:13px;height:13px;border-radius:50%;background:${color};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;`;
+  const marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+    .setLngLat([lng, lat])
+    .setPopup(new mapboxgl.Popup({ offset: 18, maxWidth: '240px' }).setHTML(
+      `<div style="font-family:Inter,sans-serif;"><div style="font-weight:600;font-size:12px;color:#0a1628;">${name}</div><div style="font-size:10px;color:#4a5a7a;margin-top:2px;">${address}</div><div style="font-size:10px;color:#7a8aaa;margin-top:2px;">${distanceMi(MAP.subjectLat,MAP.subjectLng,lat,lng).toFixed(2)} mi from subject</div></div>`
+    ))
+    .addTo(MAP.instance);
+
+  const id = MAP.nextId++;
+  MAP.pins.push({ id, name, address, lng, lat, color, type: 'amenity', marker });
+  renderPinsList();
+  toast(`Pinned: ${name}`);
+}
+
+// ── Comp management ──────────────────────────────────────────
+function toggleCompForm() {
+  const f = document.getElementById('comp-form');
+  if (f) f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+async function addComp() {
+  const name    = document.getElementById('comp-name')?.value?.trim() || 'Comp';
+  const addr    = document.getElementById('comp-address')?.value?.trim();
+  const price   = document.getElementById('comp-price')?.value?.trim();
+  const sf      = document.getElementById('comp-sf')?.value?.trim();
+  const ppsf    = document.getElementById('comp-ppsf')?.value?.trim();
+  const capRate = document.getElementById('comp-caprate')?.value?.trim();
+  const type    = document.getElementById('comp-type')?.value || 'sale';
+
+  if (!addr) return toast('Enter a property address');
+  if (!MAP.token) return toast('Mapbox token not configured');
+  if (!MAP.instance) return;
+
+  try {
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(addr)}.json?access_token=${MAP.token}&limit=1&country=us`;
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!d.features?.length) return toast('Address not found');
+
+    const [lng, lat] = d.features[0].center;
+    const color = PIN_COLORS[`comp_${type}`] || PIN_COLORS.comp_sale;
+
+    // Comp marker — square shape to distinguish from amenity circles
+    const el = document.createElement('div');
+    el.style.cssText = `width:14px;height:14px;background:${color};border:2px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:pointer;border-radius:2px;`;
+    const popupHtml = `<div style="font-family:Inter,sans-serif;">
+      <div style="font-weight:600;font-size:12px;color:#0a1628;">${name}</div>
+      <div style="font-size:10px;color:#4a5a7a;margin-top:2px;">${addr}</div>
+      <div style="margin-top:6px;display:grid;grid-template-columns:1fr 1fr;gap:4px;">
+        ${price?`<div><div style="font-size:9px;color:#7a8aaa;text-transform:uppercase;letter-spacing:0.5px;">Price</div><div style="font-size:11px;font-weight:600;">${price}</div></div>`:''}
+        ${sf?`<div><div style="font-size:9px;color:#7a8aaa;text-transform:uppercase;letter-spacing:0.5px;">SF</div><div style="font-size:11px;font-weight:600;">${sf}</div></div>`:''}
+        ${ppsf?`<div><div style="font-size:9px;color:#7a8aaa;text-transform:uppercase;letter-spacing:0.5px;">$/SF</div><div style="font-size:11px;font-weight:600;">${ppsf}</div></div>`:''}
+        ${capRate?`<div><div style="font-size:9px;color:#7a8aaa;text-transform:uppercase;letter-spacing:0.5px;">Cap Rate</div><div style="font-size:11px;font-weight:600;">${capRate}</div></div>`:''}
+      </div>
+      <div style="font-size:9px;color:#7a8aaa;margin-top:4px;text-transform:capitalize;">${type.replace('_',' ')} · ${MAP.subjectLat?distanceMi(MAP.subjectLat,MAP.subjectLng,lat,lng).toFixed(2)+' mi':''}</div>
+    </div>`;
+
+    const marker = new mapboxgl.Marker({ element: el, anchor: 'center' })
+      .setLngLat([lng, lat])
+      .setPopup(new mapboxgl.Popup({ offset: 18, maxWidth: '280px' }).setHTML(popupHtml))
+      .addTo(MAP.instance);
+
+    const id = MAP.nextId++;
+    const comp = { id, name, address: addr, price, sf, ppsf, capRate, type, color, lng, lat, marker };
+    MAP.comps.push(comp);
+    MAP.pins.push({ id: MAP.nextId++, name, address: addr, lng, lat, color, type: 'comp', marker: null });
+
+    renderCompList();
+    renderPinsList();
+    toggleCompForm();
+
+    // Clear form
+    ['comp-name','comp-address','comp-price','comp-sf','comp-ppsf','comp-caprate'].forEach(id=>{
+      const el = document.getElementById(id); if(el) el.value='';
+    });
+    toast(`Comp added: ${name}`);
+  } catch (e) { toast('Error: ' + e.message); }
+}
+
+function removeComp(id) {
+  const comp = MAP.comps.find(c=>c.id===id);
+  if (comp?.marker) comp.marker.remove();
+  MAP.comps = MAP.comps.filter(c=>c.id!==id);
+  renderCompList();
+  renderPinsList();
+}
+
+function renderCompList() {
+  const el = document.getElementById('comp-list');
+  if (!el) return;
+  if (!MAP.comps.length) { el.innerHTML = ''; return; }
+  el.innerHTML = MAP.comps.map(c=>`
+    <div class="comp-item">
+      <div class="comp-dot" style="background:${c.color};"></div>
+      <div class="comp-info">
+        <div class="comp-name-text">${c.name}</div>
+        <div class="comp-detail">${[c.price, c.sf?c.sf+' SF':'', c.ppsf, c.capRate].filter(Boolean).join(' · ')}</div>
+      </div>
+      <button class="comp-remove" onclick="removeComp(${c.id})">×</button>
+    </div>`).join('');
+}
+
+// ── Pin list ─────────────────────────────────────────────────
+function removePin(id) {
+  const pin = MAP.pins.find(p=>p.id===id);
+  if (pin?.marker) pin.marker.remove();
+  MAP.pins = MAP.pins.filter(p=>p.id!==id);
+  renderPinsList();
+}
+
+function renderPinsList() {
+  const el = document.getElementById('pins-list');
+  if (!el) return;
+  const nonSubject = MAP.pins.filter(p=>p.type!=='comp'); // comps shown in comp list
+  if (!MAP.subjectLng && !nonSubject.length) {
+    el.innerHTML = '<div style="font-size:12px;color:var(--text-muted);">No pins yet.</div>';
+    return;
+  }
+  let html = '';
+  if (MAP.subjectLng) {
+    html += `<div class="pin-item"><div class="pin-dot" style="background:${PIN_COLORS.subject};border:2px solid #c8a96e;"></div><span class="pin-label" style="font-weight:500;">Subject Property</span></div>`;
+  }
+  html += nonSubject.map(p=>`
+    <div class="pin-item">
+      <div class="pin-dot" style="background:${p.color};"></div>
+      <span class="pin-label">${p.name}</span>
+      <button class="pin-remove" onclick="removePin(${p.id})">×</button>
+    </div>`).join('');
+  el.innerHTML = html || '<div style="font-size:12px;color:var(--text-muted);">No amenity pins yet.</div>';
+}
+
+// ── Map export ───────────────────────────────────────────────
+async function exportMapImage() {
+  if (!MAP.instance) return toast('Load a map first');
+
+  // Give the map a moment to fully render before capturing
+  await new Promise(r => setTimeout(r, 500));
+
+  try {
+    const canvas = MAP.instance.getCanvas();
+    const dataUrl = canvas.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = dataUrl;
+    a.download = `property-map-${Date.now()}.png`;
+    a.click();
+    toast('Map exported as PNG');
+  } catch (e) {
+    toast('Export failed: ' + e.message);
+  }
+}
+
+// ── Legend helper ────────────────────────────────────────────
+function spinHTML() {
+  return '<span style="display:inline-block;width:11px;height:11px;border:2px solid rgba(0,87,184,0.2);border-top-color:#0057b8;border-radius:50%;animation:spin 0.8s linear infinite;margin-right:5px;vertical-align:middle;"></span>';
+}
+
+// ── Save map snapshot to document ────────────────────────────
+async function saveMapToDocument() {
+  if (!MAP.instance) return toast('Load a map first');
+  await new Promise(r => setTimeout(r, 400));
+  try {
+    const canvas = MAP.instance.getCanvas();
+    const dataUrl = canvas.toDataURL('image/png');
+    S.mapSnapshot = dataUrl;
+    toast('Map saved — it will appear in the Location section of your document');
+  } catch (e) {
+    toast('Could not capture map: ' + e.message);
+  }
+}
+
+
+function clearAllPins() {
+  MAP.pins.forEach(p => { if(p.marker) p.marker.remove(); });
+  MAP.comps.forEach(c => { if(c.marker) c.marker.remove(); });
+  MAP.pins = [];
+  MAP.comps = [];
+  if (MAP.subjectMarker) { MAP.subjectMarker.remove(); MAP.subjectMarker = null; }
+  MAP.subjectLng = null; MAP.subjectLat = null;
+  if (MAP.instance?.getSource('radius')) {
+    MAP.instance.getSource('radius').setData(emptyGeoJson());
+  }
+  renderPinsList(); renderCompList();
+  toast('All pins cleared');
+}
+
+// ── BROKER PROFILES ──────────────────────────────────────────
+let brokerPhotoData='';
+
+function showBrokerForm(id=''){
+  $('broker-form-card').style.display='block';
+  $('broker-form-title').textContent=id?'Edit Broker Profile':'Add Broker Profile';
+  $('broker-edit-id').value=id;
+  brokerPhotoData='';
+  $('bf-photo-preview').innerHTML='';
+  if(id){
+    const b=S.brokers.find(x=>x.id===id); if(!b) return;
+    [$('bf-name'),$('bf-title'),$('bf-phone'),$('bf-email'),$('bf-license'),$('bf-spec'),$('bf-bio')].forEach((el,i)=>{ if(el) el.value=[b.name,b.title,b.phone,b.email,b.license,b.spec,b.bio][i]||''; });
+    if(b.photo){brokerPhotoData=b.photo;$('bf-photo-preview').innerHTML=`<img src="${b.photo}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--border);" />`;}
+  } else {
+    [$('bf-name'),$('bf-title'),$('bf-phone'),$('bf-email'),$('bf-license'),$('bf-spec'),$('bf-bio')].forEach(el=>{if(el)el.value='';});
+  }
+  window.scrollTo(0,0);
+}
+
+function cancelBrokerForm(){
+  $('broker-form-card').style.display='none';
+  brokerPhotoData='';
+}
+
+async function handleBrokerPhoto(input){
+  const file=input.files[0]; if(!file) return;
+  const formData=new FormData(); formData.append('photo',file);
+  try{
+    const r=await fetch('/api/upload-photo',{method:'POST',body:formData});
+    const d=await r.json(); if(!r.ok) throw new Error(d.error);
+    brokerPhotoData=d.dataUrl;
+    $('bf-photo-preview').innerHTML=`<img src="${d.dataUrl}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--border);" />`;
+  }catch(e){
+    // Fallback: read locally
+    const reader=new FileReader(); reader.onload=e2=>{brokerPhotoData=e2.target.result;$('bf-photo-preview').innerHTML=`<img src="${e2.target.result}" style="width:80px;height:80px;border-radius:50%;object-fit:cover;border:2px solid var(--border);" />`;};
+    reader.readAsDataURL(file);
+  }
+}
+
+function saveBroker(){
+  const id=$('broker-edit-id').value||Date.now().toString();
+  const broker={id,name:$('bf-name')?.value||'',title:$('bf-title')?.value||'',phone:$('bf-phone')?.value||'',email:$('bf-email')?.value||'',license:$('bf-license')?.value||'',spec:$('bf-spec')?.value||'',bio:$('bf-bio')?.value||'',photo:brokerPhotoData};
+  S.brokers=[...S.brokers.filter(b=>b.id!==id),broker];
+  localStorage.setItem('cds_brokers',JSON.stringify(S.brokers));
+  $('broker-form-card').style.display='none'; brokerPhotoData='';
+  renderBrokerGrid(); toast('Broker profile saved');
+}
+
+function deleteBroker(id){
+  S.brokers=S.brokers.filter(b=>b.id!==id);
+  localStorage.setItem('cds_brokers',JSON.stringify(S.brokers));
+  renderBrokerGrid(); toast('Broker removed');
+}
+
+function renderBrokerGrid(){
+  const grid=$('broker-grid'); if(!grid) return;
+  if(!S.brokers.length){
+    grid.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg><p>No broker profiles yet.</p><button class="btn-primary" onclick="showBrokerForm()">Add First Broker</button></div>';
+    return;
+  }
+  grid.innerHTML=S.brokers.map(b=>`<div class="broker-card">
+<div class="broker-card-header">${b.photo?`<img src="${b.photo}" class="broker-avatar" />`:`<div class="broker-avatar-placeholder">${(b.name||'?')[0]}</div>`}<div><div class="broker-card-name">${b.name}</div><div class="broker-card-title">${b.title||''}</div>${b.spec?`<div class="broker-card-spec">${b.spec}</div>`:''}</div></div>
+<div class="broker-card-details">${[b.phone,b.email,b.license].filter(Boolean).join('<br>')}</div>
+${b.bio?`<div style="font-size:11px;color:var(--text-muted);line-height:1.6;margin-top:8px;">${b.bio.slice(0,120)}${b.bio.length>120?'...':''}</div>`:''}
+<div class="broker-card-actions"><button class="btn-secondary" style="font-size:11px;padding:6px 12px;" onclick="showBrokerForm('${b.id}')">Edit</button><button class="btn-secondary" style="font-size:11px;padding:6px 12px;color:#cc3333;" onclick="deleteBroker('${b.id}')">Delete</button></div>
+</div>`).join('');
+}
+
+// ── Settings ─────────────────────────────────────────────────
+function loadSettings(){
+  const s=JSON.parse(localStorage.getItem('cds_settings')||'{}');
+  if(s.firm) $('settings-firm').value=s.firm;
+  if(s.city) $('settings-city').value=s.city;
+  if(s.phone) $('settings-phone').value=s.phone;
+  if(s.disclaimer) $('settings-disclaimer').value=s.disclaimer;
+}
+function saveSettings(){
+  const s={firm:$('settings-firm')?.value,city:$('settings-city')?.value,phone:$('settings-phone')?.value,disclaimer:$('settings-disclaimer')?.value};
+  localStorage.setItem('cds_settings',JSON.stringify(s)); toast('Settings saved');
+}
+
+async function testConnection(){
+  const btn=$('btn-api-test'); const result=$('api-test-result');
+  btn.disabled=true; btn.textContent='Testing...'; result.innerHTML='';
+  try{
+    const r=await fetch('/api/ping'); const t=await r.text();
+    let d; try{d=JSON.parse(t);}catch(e){result.innerHTML=`<span style="color:#cc3333;">✗ Server returned HTML instead of JSON — app may not be deployed correctly.</span>`;btn.disabled=false;btn.textContent='Test Connection';return;}
+    if(!d.ok){result.innerHTML=`<span style="color:#cc3333;">✗ Server error: ${JSON.stringify(d)}</span>`;}
+    else if(!d.hasAnthropicKey){result.innerHTML=`<span style="color:#cc3333;">✗ Server running but ANTHROPIC_API_KEY not set. Add it in Render/Railway environment variables.</span>`;}
+    else if(!d.hasMapboxToken){result.innerHTML=`<span style="color:#b8720a;">⚠ Server running, API key ✓, but MAPBOX_TOKEN not set — map features won't work.</span>`;}
+    else{result.innerHTML='<span style="color:#1a7a4a;">✓ All systems working — server, API key, and Mapbox all confirmed.</span>';}
+  }catch(e){result.innerHTML=`<span style="color:#cc3333;">✗ Cannot reach server: ${e.message}</span>`;}
+  btn.disabled=false; btn.textContent='Test Connection';
+}
+
+// ── Dashboard ────────────────────────────────────────────────
+function refreshDashboard(){
+  const projects=JSON.parse(localStorage.getItem('cds_projects')||'[]'); S.projects=projects;
+  $('stat-docs').textContent=projects.filter(p=>p.status==='complete').length;
+  $('stat-props').textContent=projects.length;
+  const mo=new Date().toLocaleDateString('en-US',{month:'numeric',year:'numeric'});
+  $('stat-month').textContent=projects.filter(p=>{try{return new Date(p.createdAt).toLocaleDateString('en-US',{month:'numeric',year:'numeric'})===mo;}catch(e){return false;}}).length;
+  const el=$('recent-projects-list'); if(!el) return;
+  if(!projects.length){el.innerHTML='<div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><p>No projects yet.</p><button class="btn-primary" onclick="navigate(\'om-builder\')">Create Document</button></div>';return;}
+  el.innerHTML=`<table class="projects-table"><thead><tr><th>Property</th><th>Type</th><th>Price</th><th>Cap Rate</th><th>SF</th><th>Date</th><th>Status</th></tr></thead><tbody>${projects.map(p=>`<tr><td><div style="font-weight:500;">${p.name}</div><div style="font-size:11px;color:var(--text-muted);">${p.address}</div></td><td><span class="doc-type-badge ${p.docType}">${p.docType==='om'?'OM':'BOV'}</span></td><td>${p.price?'$'+fmtNum(p.price):'—'}</td><td>${p.capRate?p.capRate+'%':'—'}</td><td>${p.sf?fmtNum(p.sf)+' SF':'—'}</td><td>${p.createdAt}</td><td><span style="font-size:11px;color:${p.status==='complete'?'#1a7a4a':'#b8720a'};font-weight:500;">${p.status}</span></td></tr>`).join('')}</tbody></table>`;
+}
+
+// ── Init ─────────────────────────────────────────────────────
+(async function init(){
+  updatePagePreview();
+  refreshDashboard();
+  renderBrokerGrid();
+  try{ const r=await fetch('/api/config'); const d=await r.json(); S.map.token=d.mapboxToken||''; }catch(e){}
+})();
