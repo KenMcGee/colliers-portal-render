@@ -1,16 +1,8 @@
 {
-  "name": "colliers-design-studio",
-  "version": "1.0.0",
-  "type": "module",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=20.0.0" },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
-    "express": "^4.18.2",
-    "multer": "^1.4.5-lts.1",
-    "node-fetch": "^3.3.2",
-    "sharp": "^0.33.3",
-    "xlsx": "^0.18.5"
+  "name": "colliers-denver-design-studio",
+  "version": "3.0.0",
+  "description": "Colliers Denver Design Studio — CRE Document Portal",
+  "engines": {
+    "node": "18.x"
   }
 }
