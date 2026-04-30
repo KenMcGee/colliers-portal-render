@@ -80,64 +80,253 @@ Spreadsheet:\n${text}` }],
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// ── template analysis (PDF → images → Claude Vision) ────────
+
+// ── template analysis — Session 3: multi-pass vision ─────────
+// Pass 1: convert PDF pages to images at high resolution
+// Pass 2: send all images to Claude Vision with structured prompt
+// Pass 3 (copy mode only): second Vision call to generate CSS vars
 app.post('/api/analyze-template', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
   const mode = req.body.mode || 'inspiration';
   const isPdf = req.file.mimetype === 'application/pdf' || req.file.originalname.endsWith('.pdf');
 
-  let content = [];
+  let pageImages = [];   // { page, base64, mediaType }
+  let usedDirectPdf = false;
 
+  // ── Pass 1: PDF → images ──────────────────────────────────
   if (isPdf) {
     try {
-      // Convert PDF pages to images using sharp + pdf2pic if available
       const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
       if (fromBuffer) {
-        const convert = fromBuffer(req.file.buffer, { density: 120, format: 'jpeg', width: 1400, height: 1050, preserveAspectRatio: true, savePath: '/tmp', saveFilename: 'pg' });
-        for (let i = 1; i <= 4; i++) {
+        // Higher resolution than Session 1 — 150dpi, wider for landscape OMs
+        const convert = fromBuffer(req.file.buffer, {
+          density: 150,
+          format: 'jpeg',
+          width: 1650,
+          height: 1275,
+          preserveAspectRatio: true,
+          savePath: '/tmp',
+          saveFilename: 'pg',
+        });
+
+        // Try up to 8 pages — cover + first 7 section pages
+        for (let i = 1; i <= 8; i++) {
           try {
-            const r = await convert(i, { responseType: 'buffer' });
-            if (r?.buffer) content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64(r.buffer) } });
-          } catch { break; }
+            const result = await convert(i, { responseType: 'buffer' });
+            if (result?.buffer) {
+              pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
+            }
+          } catch {
+            // Hit end of document
+            break;
+          }
         }
       }
-    } catch { /* fall through to direct PDF */ }
-
-    if (content.length === 0) {
-      // Send PDF directly — Claude can read PDFs natively
-      content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } });
+    } catch (convErr) {
+      console.log('pdf2pic unavailable:', convErr.message);
     }
   }
 
-  content.push({ type: 'text', text: buildStylePrompt(mode, content.length > 0 && content[0].type === 'image') });
+  // ── Build Claude Vision content ───────────────────────────
+  let content = [];
 
+  if (pageImages.length > 0) {
+    content.push({
+      type: 'text',
+      text: `I'm sending you ${pageImages.length} rendered pages from a CRE document template. Analyze each page carefully.`,
+    });
+    // Send all page images, labelled
+    pageImages.forEach(pg => {
+      content.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
+    });
+  } else if (isPdf && req.file.buffer.length < 20 * 1024 * 1024) {
+    // Fall back to native PDF reading if under 20MB
+    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } });
+    usedDirectPdf = true;
+  } else {
+    return res.status(400).json({
+      error: 'Could not process file. Please upload a PDF under 20MB, or install pdf2pic on the server for larger files.',
+    });
+  }
+
+  content.push({ type: 'text', text: buildStylePrompt(mode, pageImages.length > 0) });
+
+  // ── Pass 2: Vision analysis ───────────────────────────────
+  let analysis;
   try {
-    const d = await claude({ model: 'claude-sonnet-4-6', max_tokens: 4000, messages: [{ role: 'user', content }] });
+    const d = await claude({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 5000,
+      messages: [{ role: 'user', content }],
+    });
     const raw = d.content?.[0]?.text || '{}';
-    const analysis = JSON.parse(raw.replace(/```json|```/g, '').trim());
-    res.json({ ok: true, analysis, mode, pagesAnalyzed: content.filter(c => c.type === 'image').length });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+    analysis = JSON.parse(raw.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    return res.status(500).json({ error: 'Vision analysis failed: ' + e.message });
+  }
+
+  // ── Pass 3 (copy mode): generate CSS custom properties ────
+  // A second targeted Vision call asks Claude to output the exact
+  // CSS needed to reproduce colours, spacing, and typography.
+  // This gets injected into the document renderer as overrides.
+  let cssOverrides = null;
+  if (mode === 'copy' && pageImages.length > 0) {
+    try {
+      const cssContent = [
+        { type: 'text', text: '--- Page 1 (Cover) ---' },
+        { type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } },
+        pageImages[1] && { type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } },
+        {
+          type: 'text',
+          text: `Based on these pages, generate CSS custom properties that exactly replicate the visual design.
+Return ONLY a valid JSON object mapping CSS variable names to values — no other text:
+{
+  "--doc-primary":      "#001a4d",
+  "--doc-secondary":    "#0057b8",
+  "--doc-accent":       "#c8a96e",
+  "--doc-text":         "#1a2332",
+  "--doc-bg":           "#ffffff",
+  "--doc-rule":         "#0057b8",
+  "--doc-header-bg":    "#001a4d",
+  "--doc-footer-bg":    "#001a4d",
+  "--doc-footer-h":     "28px",
+  "--doc-heading-font": "'Playfair Display', serif",
+  "--doc-body-font":    "'Inter', sans-serif",
+  "--doc-number-font":  "'Playfair Display', serif",
+  "--doc-heading-size": "22pt",
+  "--doc-body-size":    "10.5pt",
+  "--doc-heading-wt":   "500",
+  "--doc-line-height":  "1.7",
+  "--doc-corner-r":     "4px",
+  "--doc-pad-top":      "0.45in",
+  "--doc-pad-right":    "0.5in",
+  "--doc-pad-bottom":   "0.45in",
+  "--doc-pad-left":     "0.5in",
+  "--doc-accent-bar-h": "5px",
+  "--doc-sidebar-w":    "2.1in",
+  "--doc-stat-bg":      "#001a4d",
+  "--doc-stat-text":    "#ffffff",
+  "--doc-stat-accent":  "#c8a96e"
+}`,
+        },
+      ].filter(Boolean);
+
+      const cd = await claude({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        messages: [{ role: 'user', content: cssContent }],
+      });
+      const craw = cd.content?.[0]?.text || '{}';
+      cssOverrides = JSON.parse(craw.replace(/```json|```/g, '').trim());
+    } catch (e) {
+      console.log('CSS override pass failed (non-fatal):', e.message);
+    }
+  }
+
+  return res.json({
+    ok: true,
+    analysis,
+    cssOverrides,
+    mode,
+    pagesAnalyzed: pageImages.length,
+    usedDirectPdf,
+  });
 });
+
+
 
 function buildStylePrompt(mode, hasImages) {
   const depth = mode === 'copy'
-    ? 'EXACT REPLICATION: Measure precise proportions, colors, font sizes. Goal: reproduce this layout exactly.'
-    : 'STYLE INSPIRATION: Capture design language, mood, palette. Goal: create similar-feeling documents.';
+    ? `EXACT REPLICATION MODE: Measure this template precisely so it can be reproduced exactly. Extract specific proportions, exact hex colors sampled from the image, exact font sizes in points, exact padding amounts. Be precise — "dark blue" is unacceptable, give hex codes.`
+    : `STYLE INSPIRATION MODE: Capture design language, mood, color relationships, and compositional principles. Describe the spirit and feel accurately.`;
+
   return `${depth}
-${hasImages ? 'Analyze these rendered page images.' : 'Analyze this document.'}
-Return ONLY valid JSON — no markdown, no other text:
+
+${hasImages
+  ? 'Carefully analyze each rendered page image. For each page, identify its type and extract its layout structure.'
+  : 'Analyze this document carefully.'}
+
+Return ONLY valid JSON — no markdown, no text before or after the JSON:
 {
-  "mode":"${mode}",
-  "pageLayouts":[{"pageType":"cover|highlights|property|financials|location|team","layoutStructure":"full-bleed-photo|split-left-photo|split-right-photo|sidebar-right|two-column|single-column","headerHeightPercent":0,"photoAreaPercent":0,"photoPosition":"full-bleed|left|right|top|inset-right|none","hasColoredHeader":true,"hasSidebar":false,"sidebarWidthPercent":25,"description":""}],
-  "colors":{"primary":"#001a4d","secondary":"#0057b8","accent":"#c8a96e","text":"#1a2332","bg":"#ffffff","rule":"#0057b8","headerBg":"#001a4d","footerBg":"#001a4d","statCardBg":"#001a4d"},
-  "typography":{"suggestedHeading":"Playfair Display","suggestedBody":"Inter","suggestedNumber":"Playfair Display","headingWeight":"500","bodyFontSizePt":10,"headingFontSizePt":22,"useAllCapsEyebrows":true},
-  "accentElements":{"usesFullBleedPhotos":true,"usesSplitLayout":false,"usesColoredBands":true,"usesSidebarPanels":true,"usesLargeStatCards":true,"usesPullQuotes":true,"usesDecorativeBars":true,"cornerRadiusPx":4,"photoStyle":"full-bleed","headerStyle":"dark-overlay","sectionDividerStyle":"colored-rule","statCardStyle":"dark-filled"},
-  "coverPage":{"photoTreatment":"full-bleed-dark-overlay","photoOpacity":0.55,"titleFontSizePt":36,"titlePosition":"bottom-left","statsPosition":"bottom-strip","accentBarPosition":"bottom","accentBarThicknessPx":5},
-  "designLanguage":{"density":"balanced","formality":"professional","photoEmphasis":"balanced","typographyContrast":"high","overallMood":""},
-  "cssVariables":{"pagePaddingTopIn":0.45,"pagePaddingRightIn":0.5,"pagePaddingBottomIn":0.45,"pagePaddingLeftIn":0.5},
-  "aesthetic":""
+  "mode": "${mode}",
+  "pageLayouts": [
+    {
+      "pageType": "cover",
+      "layoutStructure": "full-bleed-photo|split-left-photo|split-right-photo|sidebar-right|two-column|single-column|top-band",
+      "photoPosition": "full-bleed|left|right|top|inset-right|inset-left|none",
+      "hasColoredHeader": true,
+      "hasSidebar": false,
+      "sidebarWidthPercent": 28,
+      "description": "Specific layout description"
+    }
+  ],
+  "colors": {
+    "primary": "#001a4d",
+    "secondary": "#0057b8",
+    "accent": "#c8a96e",
+    "text": "#1a2332",
+    "bg": "#ffffff",
+    "rule": "#0057b8",
+    "headerBg": "#001a4d",
+    "footerBg": "#001a4d",
+    "statCardBg": "#001a4d",
+    "statCardText": "#ffffff",
+    "highlightBg": "#f5f0e0"
+  },
+  "typography": {
+    "suggestedHeading": "Playfair Display",
+    "suggestedBody": "Inter",
+    "suggestedNumber": "Playfair Display",
+    "headingWeight": "500",
+    "bodyFontSizePt": 10.5,
+    "headingFontSizePt": 22,
+    "lineHeightBody": 1.7,
+    "useAllCapsEyebrows": true,
+    "useAllCapsHeadings": false
+  },
+  "accentElements": {
+    "usesFullBleedPhotos": true,
+    "usesSplitLayout": false,
+    "usesColoredBands": true,
+    "usesSidebarPanels": true,
+    "usesLargeStatCards": true,
+    "usesPullQuotes": true,
+    "usesDecorativeBars": true,
+    "cornerRadiusPx": 4,
+    "photoStyle": "full-bleed|inset|bordered|rounded",
+    "headerStyle": "dark-overlay|colored-band|split|minimal|top-band",
+    "sectionDividerStyle": "colored-rule|thin-rule|colored-band|whitespace|decorative-dots",
+    "statCardStyle": "dark-filled|light-outlined|accent-filled|transparent-bordered"
+  },
+  "coverPage": {
+    "photoTreatment": "full-bleed-dark-overlay|split-left-photo|split-right-photo|top-band|inset",
+    "photoOpacity": 0.55,
+    "titleFontSizePt": 36,
+    "titlePosition": "bottom-left|bottom-right|center|top-left",
+    "statsPosition": "bottom-strip|right-column|none",
+    "accentBarPosition": "bottom|top|none",
+    "accentBarThicknessPx": 5
+  },
+  "designLanguage": {
+    "density": "dense|balanced|airy",
+    "formality": "luxury|professional|modern|minimal",
+    "photoEmphasis": "dominant|balanced|subtle",
+    "typographyContrast": "high|medium|low",
+    "overallMood": "one sentence"
+  },
+  "cssVariables": {
+    "pagePaddingTopIn": 0.45,
+    "pagePaddingRightIn": 0.5,
+    "pagePaddingBottomIn": 0.45,
+    "pagePaddingLeftIn": 0.5,
+    "lineHeightBody": 1.7,
+    "tableRowHeightPt": 20
+  },
+  "aesthetic": "One sentence describing the visual personality of this document"
 }`;
 }
+
 
 // ── photo upload (broker headshots) ─────────────────────────
 app.post('/api/upload-photo', upload.single('photo'), (req, res) => {
@@ -147,17 +336,52 @@ app.post('/api/upload-photo', upload.single('photo'), (req, res) => {
 });
 
 // ── Google Places proxy (keeps API key server-side) ──────────
+// ── Google Places proxy (server-side keeps key hidden) ────────
 app.post('/api/places-search', async (req, res) => {
   const key = process.env.GOOGLE_MAPS_KEY;
-  const { query, location, radius = 1609 } = req.body;
-  if (!key) return res.status(400).json({ error: 'GOOGLE_MAPS_KEY not configured' });
+  const { query, lat, lng, radius = 1609, type } = req.body;
+  if (!key) return res.status(400).json({ error: 'GOOGLE_MAPS_KEY not configured', fallback: true });
   try {
-    const url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&location=${location}&radius=${radius}&key=${key}`;
+    // Use Nearby Search when we have coordinates, Text Search otherwise
+    let url;
+    if (lat && lng && type) {
+      url = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${lat},${lng}&radius=${radius}&keyword=${encodeURIComponent(query||type)}&key=${key}`;
+    } else if (lat && lng) {
+      url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&location=${lat},${lng}&radius=${radius}&key=${key}`;
+    } else {
+      url = `https://maps.googleapis.com/maps/api/place/textsearch/json?query=${encodeURIComponent(query)}&key=${key}`;
+    }
     const r = await fetch(url);
     const d = await r.json();
-    res.json(d);
+    // Normalize to consistent format
+    const results = (d.results || []).map(p => ({
+      name: p.name,
+      address: p.formatted_address || p.vicinity,
+      lat: p.geometry?.location?.lat,
+      lng: p.geometry?.location?.lng,
+      rating: p.rating,
+      types: p.types,
+    }));
+    res.json({ ok: true, results });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
+
+// ── Mapbox geocoding proxy (keeps token server-side optionally) ─
+app.post('/api/geocode', async (req, res) => {
+  const token = process.env.MAPBOX_TOKEN;
+  const { address } = req.body;
+  if (!token) return res.status(400).json({ error: 'MAPBOX_TOKEN not configured' });
+  if (!address) return res.status(400).json({ error: 'address required' });
+  try {
+    const url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(address)}.json?access_token=${token}&limit=1&country=us`;
+    const r = await fetch(url);
+    const d = await r.json();
+    if (!d.features?.length) return res.status(404).json({ error: 'Not found' });
+    const [lng, lat] = d.features[0].center;
+    res.json({ ok: true, lng, lat, placeName: d.features[0].place_name });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 
 // ── SPA fallback ────────────────────────────────────────────
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
