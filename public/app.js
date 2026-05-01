@@ -16,6 +16,7 @@ const S = {
   },
   narrative: '', extractedFin: null,
   map: { instance: null, token: '', subjectLng: null, subjectLat: null, pins: [], comps: [], radiusSource: null },
+   templateLibrary: [], selectedLibraryTemplate: null,
 };
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -45,6 +46,7 @@ function navigate(page) {
   if(page==='dashboard') refreshDashboard();
   if(page==='settings') loadSettings();
   if(page==='brokers') renderBrokerGrid();
+  if(page==='template-studio') { tsLoadLibrary(); }
   if(page==='map-generator') initMap();
   window.scrollTo(0,0);
 }
@@ -1694,6 +1696,402 @@ function clearAllPins() {
   toast('All pins cleared');
 }
 
+// ══════════════════════════════════════════════════════════════
+// TEMPLATE STUDIO
+// ══════════════════════════════════════════════════════════════
+
+const TS = {
+  templates: [],       // full library from server
+  filtered: [],        // after search/filter
+  activeId: null,      // currently open in reviewer
+  activePage: 0,       // page index (0-based)
+  filter: 'all',
+  search: '',
+  diffOn: false,
+  importFile: null,
+};
+
+// ── Fetch library from server ────────────────────────────────
+async function tsLoadLibrary() {
+  try {
+    const r = await fetch('/api/templates');
+    const d = await r.json();
+    TS.templates = d.templates || [];
+    tsRenderLibrary();
+    tsBuildPickerGrid();   // also refresh the OM builder picker
+  } catch (e) { console.error('Template library load failed:', e); }
+}
+
+// ── Library grid ─────────────────────────────────────────────
+function filterTemplates(val) { TS.search = val; tsRenderLibrary(); }
+
+function setTsFilter(f) {
+  TS.filter = f;
+  ['all','approved','review','rejected'].forEach(k => {
+    const el = $('tsf-' + k); if (el) el.classList.toggle('active', k === f);
+  });
+  tsRenderLibrary();
+}
+
+function tsRenderLibrary() {
+  const grid = $('ts-library-grid'); if (!grid) return;
+  let items = TS.templates;
+  if (TS.filter !== 'all') items = items.filter(t => t.status === TS.filter);
+  if (TS.search) items = items.filter(t => t.name.toLowerCase().includes(TS.search.toLowerCase()));
+  TS.filtered = items;
+
+  if (!items.length) {
+    grid.innerHTML = `<div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><p>No templates${TS.filter !== 'all' ? ' with status "'+TS.filter+'"' : ''}.</p></div>`;
+    return;
+  }
+
+  grid.innerHTML = items.map(t => `
+    <div class="ts-card ${TS.activeId === t.id ? 'active' : ''}" onclick="tsOpenTemplate('${t.id}')">
+      <div class="ts-card-thumb">
+        ${t.thumbnail ? `<img src="${t.thumbnail}" style="width:100%;height:100%;object-fit:cover;display:block;" />` : '<div style="width:100%;height:100%;background:var(--surface-2);display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:11px;">No preview</div>'}
+        <div class="ts-card-status ${t.status}">${t.status === 'review' ? 'IN REVIEW' : t.status.toUpperCase()}</div>
+      </div>
+      <div class="ts-card-body">
+        <div class="ts-card-name">${t.name}</div>
+        <div class="ts-card-meta">${t.pages?.length || 0}pp · ${new Date(t.createdAt).toLocaleDateString()}</div>
+        <div class="ts-card-tags">${(t.tags || []).map(tag => `<span class="ts-tag">${tag}</span>`).join('')}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ── Open template in reviewer ─────────────────────────────────
+function tsOpenTemplate(id) {
+  TS.activeId = id;
+  TS.activePage = 0;
+  tsRenderLibrary();   // re-render to highlight active card
+  const t = TS.templates.find(x => x.id === id); if (!t) return;
+  $('ts-reviewer-empty').style.display = 'none';
+  $('ts-reviewer-body').style.display = 'flex';
+  $('ts-rev-name').textContent = t.name;
+  $('ts-rev-meta').textContent = `${t.pages?.length || 0} pages · Imported ${new Date(t.createdAt).toLocaleDateString()}${t.description ? ' · ' + t.description.slice(0,60) : ''}`;
+  const pill = $('ts-rev-status-pill');
+  pill.textContent = t.status === 'review' ? 'Pending Review' : t.status.charAt(0).toUpperCase() + t.status.slice(1);
+  pill.className = 'ts-status-pill ' + t.status;
+  tsRenderRevPage();
+  tsRenderAnalysis(t);
+  tsRenderComments(t);
+}
+
+// ── Reviewer: page render ─────────────────────────────────────
+function tsRenderRevPage() {
+  const t = TS.templates.find(x => x.id === TS.activeId); if (!t) return;
+  const pg = t.pages?.[TS.activePage];
+  const total = t.pages?.length || 1;
+
+  $('ts-page-indicator').textContent = `Page ${TS.activePage + 1} of ${total}`;
+
+  // Original — show extracted thumbnail
+  const origImg = $('ts-orig-img');
+  if (pg?.thumbnail) { origImg.src = pg.thumbnail; origImg.style.display = 'block'; }
+  else { origImg.style.display = 'none'; }
+
+  // Replica — render CSS variables into an iframe
+  const frame = $('ts-replica-frame');
+  const css = t.cssOverrides || {};
+  const analysis = t.analysis || {};
+  const layout = pg?.layout || analysis.pageLayouts?.[TS.activePage] || {};
+
+  const colors = analysis.colors || {};
+  const typo   = analysis.typography || {};
+  const primary = css['--doc-primary']   || colors.primary   || '#001a4d';
+  const accent  = css['--doc-accent']    || colors.accent     || '#c8a96e';
+  const bg      = css['--doc-bg']        || colors.bg         || '#ffffff';
+  const text    = css['--doc-text']      || colors.text       || '#1a2332';
+  const hFont   = css['--doc-heading-font']?.replace(/'/g,'') || typo.suggestedHeading || 'Playfair Display';
+  const bFont   = css['--doc-body-font']?.replace(/'/g,'')   || typo.suggestedBody   || 'Inter';
+  const hSize   = css['--doc-heading-size'] || (typo.headingFontSizePt ? typo.headingFontSizePt + 'pt' : '22pt');
+  const bSize   = css['--doc-body-size']   || (typo.bodyFontSizePt    ? typo.bodyFontSizePt + 'pt'    : '10.5pt');
+
+  const gfUrl = `https://fonts.googleapis.com/css2?family=${hFont.replace(/ /g,'+')}:wght@400;600&family=${bFont.replace(/ /g,'+')}:wght@400;500&display=swap`;
+
+  const coverHtml = `<!DOCTYPE html><html><head>
+    <link href="${gfUrl}" rel="stylesheet"/>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0;}
+      body{width:11in;height:8.5in;background:${primary};overflow:hidden;font-family:'${bFont}',sans-serif;}
+      .cover{width:100%;height:100%;position:relative;display:flex;flex-direction:column;justify-content:flex-end;padding:0.5in;}
+      .cover-title{font-family:'${hFont}',serif;font-size:${hSize};color:#fff;font-weight:600;line-height:1.1;margin-bottom:8px;}
+      .cover-sub{font-size:${bSize};color:rgba(255,255,255,0.6);margin-bottom:20px;}
+      .cover-bar{height:5px;background:${accent};width:50px;margin-bottom:20px;border-radius:2px;}
+      .cover-label{font-size:8pt;letter-spacing:2px;text-transform:uppercase;color:${accent};margin-bottom:10px;}
+      .stats{display:flex;gap:0.3in;flex-wrap:wrap;border-top:1px solid rgba(255,255,255,0.2);padding-top:18px;margin-top:auto;}
+      .stat .lbl{font-size:7pt;letter-spacing:1.5px;text-transform:uppercase;color:rgba(255,255,255,0.5);margin-bottom:4px;}
+      .stat .val{font-family:'${hFont}',serif;font-size:20pt;color:#fff;font-weight:600;}
+    </style>
+  </head><body>
+    <div class="cover">
+      <div class="cover-label">${analysis.designLanguage?.formality || 'Professional'} · Offering Memorandum</div>
+      <div class="cover-bar"></div>
+      <div class="cover-title">Property Name</div>
+      <div class="cover-sub">123 Main Street, City, State 00000</div>
+      <div class="stats">
+        <div class="stat"><div class="lbl">Asking Price</div><div class="val">$X,XXX,XXX</div></div>
+        <div class="stat"><div class="lbl">Cap Rate</div><div class="val">X.XX%</div></div>
+        <div class="stat"><div class="lbl">Building SF</div><div class="val">XX,XXX</div></div>
+      </div>
+    </div>
+  </body></html>`;
+
+  const interiorHtml = `<!DOCTYPE html><html><head>
+    <link href="${gfUrl}" rel="stylesheet"/>
+    <style>
+      *{box-sizing:border-box;margin:0;padding:0;}
+      body{width:11in;height:8.5in;background:${bg};overflow:hidden;font-family:'${bFont}',sans-serif;color:${text};font-size:${bSize};}
+      .page{width:100%;height:100%;display:flex;flex-direction:column;padding:0.45in 0.5in 0;}
+      .eyebrow{font-size:7pt;letter-spacing:2px;text-transform:uppercase;color:${primary};margin-bottom:5px;}
+      .sec-title{font-family:'${hFont}',serif;font-size:${hSize};color:${primary};margin-bottom:12px;font-weight:600;}
+      .rule{height:2px;background:${accent};margin-bottom:14px;width:100%;}
+      .body-text{line-height:1.7;margin-bottom:10px;opacity:0.85;}
+      .stat-row{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px;}
+      .stat-box{background:${primary};border-radius:4px;padding:10px;text-align:center;}
+      .stat-lbl{font-size:6.5pt;letter-spacing:1.5px;text-transform:uppercase;color:${accent};margin-bottom:3px;}
+      .stat-val{font-family:'${hFont}',serif;font-size:16pt;color:#fff;font-weight:600;}
+      .footer{position:absolute;bottom:0;left:0;right:0;height:26px;background:${primary};display:flex;align-items:center;padding:0 0.5in;}
+      .footer-text{font-size:7pt;color:${accent};letter-spacing:0.5px;}
+    </style>
+  </head><body>
+    <div class="page">
+      <div class="eyebrow">Offering Memorandum</div>
+      <div class="rule"></div>
+      <div class="sec-title">${layout.pageType ? layout.pageType.charAt(0).toUpperCase() + layout.pageType.slice(1) + ' Details' : 'Section Title'}</div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="stat-lbl">Metric</div><div class="stat-val">Value</div></div>
+        <div class="stat-box"><div class="stat-lbl">Metric</div><div class="stat-val">Value</div></div>
+        <div class="stat-box"><div class="stat-lbl">Metric</div><div class="stat-val">Value</div></div>
+        <div class="stat-box"><div class="stat-lbl">Metric</div><div class="stat-val">Value</div></div>
+      </div>
+      <div class="body-text">This section contains property details, financial summary, market analysis, and investment thesis. The typography, colors, spacing, and layout structure are all derived from the original uploaded template.</div>
+      <div class="body-text">Additional supporting content and data appears here, maintaining the visual style and formatting rules extracted from the source document.</div>
+    </div>
+    <div class="footer"><span class="footer-text">Colliers International · Property Name · Offering Memorandum</span></div>
+  </body></html>`;
+
+  const doc = frame.contentDocument || frame.contentWindow.document;
+  doc.open();
+  doc.write(TS.activePage === 0 ? coverHtml : interiorHtml);
+  doc.close();
+}
+
+function tsChangePage(dir) {
+  const t = TS.templates.find(x => x.id === TS.activeId); if (!t) return;
+  const total = t.pages?.length || 1;
+  TS.activePage = Math.max(0, Math.min(total - 1, TS.activePage + dir));
+  tsRenderRevPage();
+}
+
+function tsToggleDiff() {
+  TS.diffOn = !TS.diffOn;
+  $('ts-diff-overlay').style.display = TS.diffOn ? 'block' : 'none';
+}
+
+// ── Reviewer: analysis panel ──────────────────────────────────
+function tsRenderAnalysis(t) {
+  const grid = $('ts-analysis-grid'); if (!grid) return;
+  const a = t.analysis || {};
+  const cssCnt = Object.keys(t.cssOverrides || {}).length;
+  const pagesCnt = t.pages?.length || 0;
+  const rows = [
+    ['Pages analyzed', pagesCnt || '—'],
+    ['CSS variables', cssCnt ? `${cssCnt} extracted` : '—'],
+    ['Layout', a.pageLayouts?.[0]?.layoutStructure || '—'],
+    ['Typography', a.typography?.suggestedHeading ? `${a.typography.suggestedHeading} / ${a.typography.suggestedBody}` : '—'],
+    ['Primary color', a.colors?.primary || t.cssOverrides?.['--doc-primary'] || '—'],
+    ['Accent color', a.colors?.accent || t.cssOverrides?.['--doc-accent'] || '—'],
+    ['Formality', a.designLanguage?.formality || '—'],
+    ['Density', a.designLanguage?.density || '—'],
+  ];
+  grid.innerHTML = rows.map(([k,v]) => `
+    <div class="ts-analysis-row">
+      <span class="ts-analysis-key">${k}</span>
+      <span class="ts-analysis-val">${v}</span>
+    </div>
+  `).join('');
+}
+
+// ── Reviewer: comments ────────────────────────────────────────
+function tsRenderComments(t) {
+  const list = $('ts-comment-list'); if (!list) return;
+  const comments = t?.comments || [];
+  if (!comments.length) { list.innerHTML = '<div style="font-size:11px;color:var(--text-muted);">No notes yet.</div>'; return; }
+  list.innerHTML = comments.map(c => `
+    <div class="ts-comment">
+      <div class="ts-comment-meta"><span style="color:var(--colliers-mid);font-weight:500;">${c.author}</span> <span>${new Date(c.createdAt).toLocaleDateString()}</span></div>
+      <div class="ts-comment-text">${c.type === 'flag' ? '⚑ ' : ''}${c.text}</div>
+    </div>
+  `).join('');
+}
+
+async function tsAddComment(type) {
+  const input = $('ts-comment-input'); if (!input?.value.trim()) return;
+  const t = TS.templates.find(x => x.id === TS.activeId); if (!t) return;
+  try {
+    const r = await fetch(`/api/templates/${TS.activeId}/comments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: 'You', text: input.value.trim(), type, page: TS.activePage + 1 }),
+    });
+    const d = await r.json();
+    if (d.ok) { t.comments.push(d.comment); tsRenderComments(t); input.value = ''; }
+  } catch (e) { toast('Could not save comment'); }
+}
+
+// ── Approve / Reject ──────────────────────────────────────────
+async function tsApproveTemplate() {
+  await tsSetStatus('approved');
+  toast('Template approved — now available in the builder');
+  tsBuildPickerGrid();
+}
+
+async function tsRejectTemplate() {
+  await tsSetStatus('rejected');
+  toast('Template rejected');
+}
+
+async function tsSetStatus(status) {
+  const t = TS.templates.find(x => x.id === TS.activeId); if (!t) return;
+  try {
+    const r = await fetch(`/api/templates/${TS.activeId}/status`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      t.status = status;
+      const pill = $('ts-rev-status-pill');
+      pill.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+      pill.className = 'ts-status-pill ' + status;
+      tsRenderLibrary();
+    }
+  } catch (e) { toast('Could not update status'); }
+}
+
+function tsCopyCss() {
+  const t = TS.templates.find(x => x.id === TS.activeId); if (!t) return;
+  const css = Object.entries(t.cssOverrides || {}).map(([k,v]) => `  ${k}: ${v};`).join('\n');
+  navigator.clipboard.writeText(`:root {\n${css}\n}`).then(() => toast('CSS variables copied to clipboard'));
+}
+
+// ── Import modal ──────────────────────────────────────────────
+function showImportModal() {
+  const modal = $('import-modal');
+  modal.style.display = 'flex';
+  $('import-name').value = '';
+  $('import-tags').value = '';
+  $('import-file-label').textContent = 'Click to select a PDF template';
+  $('import-status').textContent = '';
+  $('btn-run-import').disabled = true;
+  $('btn-run-import').style.opacity = '0.5';
+  TS.importFile = null;
+}
+
+function hideImportModal() {
+  $('import-modal').style.display = 'none';
+  TS.importFile = null;
+}
+
+function handleImportFile(input) {
+  const file = input.files[0]; if (!file) return;
+  TS.importFile = file;
+  $('import-file-label').textContent = `${file.name} (${(file.size/1024/1024).toFixed(1)} MB)`;
+  $('btn-run-import').disabled = false;
+  $('btn-run-import').style.opacity = '1';
+  if (!$('import-name').value) {
+    $('import-name').value = file.name.replace(/\.pdf$/i, '').replace(/[-_]/g, ' ');
+  }
+}
+
+async function runImport() {
+  if (!TS.importFile) return;
+  const name = $('import-name').value.trim() || TS.importFile.name.replace(/\.pdf$/i,'');
+  const tags = $('import-tags').value.split(',').map(t=>t.trim()).filter(Boolean);
+  const st = $('import-status');
+  const btn = $('btn-run-import');
+
+  btn.disabled = true; btn.textContent = 'Analyzing...';
+  st.innerHTML = spin() + 'Uploading PDF to server...';
+
+  const fd = new FormData();
+  fd.append('file', TS.importFile);
+  fd.append('name', name);
+  fd.append('tags', JSON.stringify(tags));
+
+  try {
+    st.innerHTML = spin() + 'Claude Vision is analyzing every page — this takes 30–60 seconds...';
+    const r = await fetch('/api/templates/analyze', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'Analysis failed');
+
+    TS.templates.unshift(d.template);
+    tsRenderLibrary();
+    tsBuildPickerGrid();
+    hideImportModal();
+    tsOpenTemplate(d.template.id);
+    toast(`"${name}" imported — ${d.pagesAnalyzed} pages analyzed. Ready for review.`);
+  } catch (e) {
+    st.textContent = '✗ ' + (e.message || 'Import failed');
+    st.className = 'extract-status err';
+  } finally {
+    btn.disabled = false; btn.textContent = 'Analyze & Import';
+  }
+}
+
+// ── OM/BOV builder picker ─────────────────────────────────────
+// Renders the "From Library" grid in Step 1 of the OM builder
+function tsBuildPickerGrid() {
+  const grid = $('ts-picker-grid'); if (!grid) return;
+  const approved = TS.templates.filter(t => t.status === 'approved');
+  if (!approved.length) {
+    grid.innerHTML = `<div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No approved templates yet — <a href="#" onclick="navigate('template-studio');return false;" style="color:var(--colliers-mid);">open Template Studio</a> to import one.</div>`;
+    return;
+  }
+  grid.innerHTML = approved.map(t => `
+    <div class="ts-picker-card ${S.selectedLibraryTemplate?.id === t.id ? 'active' : ''}" onclick="selectLibraryTemplate('${t.id}')">
+      <div class="ts-picker-thumb">
+        ${t.thumbnail ? `<img src="${t.thumbnail}" style="width:100%;height:100%;object-fit:cover;display:block;" />` : '<div style="width:100%;height:100%;background:var(--surface-2);"></div>'}
+      </div>
+      <div class="ts-picker-name">${t.name}</div>
+    </div>
+  `).join('') + `<div class="ts-picker-card ${!S.selectedLibraryTemplate ? 'active' : ''}" onclick="selectLibraryTemplate(null)"><div class="ts-picker-thumb" style="display:flex;align-items:center;justify-content:center;background:var(--surface-2);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="5" y1="12" x2="19" y2="12"/></svg></div><div class="ts-picker-name" style="color:var(--text-muted);">None / Manual</div></div>`;
+}
+
+function selectLibraryTemplate(id) {
+  if (!id) {
+    S.selectedLibraryTemplate = null;
+    S.design.analysis = null;
+    S.design.cssOverrides = null;
+    tsBuildPickerGrid();
+    toast('Manual design mode — use settings below');
+    return;
+  }
+  const t = TS.templates.find(x => x.id === id); if (!t) return;
+  S.selectedLibraryTemplate = t;
+  S.design.analysis = t.analysis;
+  S.design.cssOverrides = t.cssOverrides;
+
+  // Apply colors to the design step pickers
+  const a = t.analysis;
+  if (a?.colors) Object.entries(a.colors).forEach(([k,v]) => setColor(k,v));
+
+  // Apply fonts
+  if (a?.typography) {
+    const hF = GF.find(f => f.toLowerCase().includes((a.typography.suggestedHeading||'').toLowerCase().split(' ')[0]));
+    const bF = GF.find(f => f.toLowerCase().includes((a.typography.suggestedBody||'').toLowerCase().split(' ')[0]));
+    if (hF) { $('font-heading').value = hF; }
+    if (bF) { $('font-body').value = bF; }
+    updateFontPreview();
+  }
+
+  tsBuildPickerGrid();
+  toast(`Template "${t.name}" applied to document`);
+}
+
 // ── BROKER PROFILES ──────────────────────────────────────────
 let brokerPhotoData='';
 
@@ -1807,4 +2205,5 @@ function refreshDashboard(){
   refreshDashboard();
   renderBrokerGrid();
   try{ const r=await fetch('/api/config'); const d=await r.json(); S.map.token=d.mapboxToken||''; }catch(e){}
+  await tsLoadLibrary();   // load template library on startup
 })();
