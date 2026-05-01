@@ -22,6 +22,7 @@
       <div class="nav-section-label">Tools</div>
       <a href="#" class="nav-item active" data-page="dashboard"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>Dashboard</a>
       <a href="#" class="nav-item" data-page="om-builder"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>OM / BOV Builder</a>
+      <a href="#" class="nav-item" data-page="template-studio"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>Template Studio</a>
       <a href="#" class="nav-item" data-page="map-generator"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21"/><line x1="9" y1="3" x2="9" y2="18"/><line x1="15" y1="6" x2="15" y2="21"/></svg>Map Generator</a>
       <a href="#" class="nav-item" data-page="brokers"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>Broker Profiles</a>
       <div class="nav-section-label" style="margin-top:20px;">Account</div>
@@ -118,6 +119,14 @@
                 <div class="preset-tmpl-thumb" style="background:#ffffff;border:1px solid #e0e0e0;"><div style="height:5%;background:#1a2332;"></div><div style="flex:1;padding:6px;"><div style="height:2px;background:#1a2332;margin-bottom:6px;"></div><div style="height:7px;background:#f4f7fb;border-radius:2px;margin-bottom:3px;"></div><div style="height:7px;background:#f4f7fb;border-radius:2px;"></div></div><div style="height:7%;background:#1a2332;"></div></div>
                 <div class="preset-tmpl-name">Minimal</div>
                 <div class="preset-tmpl-desc">White, thin rules, airy</div>
+              </div>
+            </div>
+            <!-- TEMPLATE LIBRARY PICKER (feeds from Template Studio) -->
+            <div id="library-picker-section" style="margin-bottom:28px;">
+              <h3>From Template Library</h3>
+              <p class="field-hint">Approved templates from Template Studio. Selecting one overrides the design settings below.</p>
+              <div class="ts-library-picker-grid" id="ts-picker-grid">
+                <div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No approved templates yet — <a href="#" onclick="navigate('template-studio');return false;" style="color:var(--colliers-mid);">open Template Studio</a> to import one.</div>
               </div>
             </div>
             <h3>Document Type</h3>
@@ -300,6 +309,129 @@
       <div id="document-preview-container"></div>
     </div>
 
+    <!-- TEMPLATE STUDIO -->
+    <div class="page" id="page-template-studio">
+      <div class="page-header">
+        <div><h1>Template Studio</h1><p class="page-subtitle">Import, review, and manage document templates for the OM/BOV and Brochure builders</p></div>
+        <button class="btn-primary" onclick="showImportModal()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>Import Template</button>
+      </div>
+
+      <!-- IMPORT MODAL -->
+      <div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;display:none;align-items:center;justify-content:center;">
+        <div style="background:white;border-radius:14px;width:520px;max-width:95vw;padding:28px 32px;box-shadow:0 16px 48px rgba(0,0,0,0.2);">
+          <h3 style="margin-bottom:6px;">Import Template</h3>
+          <p class="field-hint" style="margin-bottom:20px;">Upload a PDF — Claude Vision analyzes every page and generates a pixel-accurate HTML/CSS replica.</p>
+          <div class="form-group full" style="margin-bottom:14px;"><label>Template Name</label><input type="text" id="import-name" placeholder="e.g. Industrial OM — Colliers Blue" /></div>
+          <div class="form-group full" style="margin-bottom:14px;"><label>Tags (comma separated)</label><input type="text" id="import-tags" placeholder="OM, industrial, landscape" /></div>
+          <div class="iupload" id="import-dropzone" onclick="document.getElementById('import-file-input').click()" style="margin-bottom:14px;">
+            <input type="file" id="import-file-input" style="display:none" accept=".pdf" onchange="handleImportFile(this)" />
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span id="import-file-label">Click to select a PDF template</span>
+          </div>
+          <div class="extract-status" id="import-status"></div>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:18px;">
+            <button class="btn-secondary" onclick="hideImportModal()">Cancel</button>
+            <button class="btn-primary" id="btn-run-import" onclick="runImport()" disabled style="opacity:0.5;">Analyze &amp; Import</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- STUDIO BODY: library + reviewer side by side -->
+      <div class="ts-layout">
+
+        <!-- LEFT: Library -->
+        <div class="ts-library-col">
+          <div class="ts-library-toolbar">
+            <input class="ts-search" id="ts-search" placeholder="Search templates..." oninput="filterTemplates(this.value)" />
+            <div class="ts-filter-row">
+              <button class="ts-filter active" id="tsf-all" onclick="setTsFilter('all')">All</button>
+              <button class="ts-filter" id="tsf-approved" onclick="setTsFilter('approved')">Approved</button>
+              <button class="ts-filter" id="tsf-review" onclick="setTsFilter('review')">In Review</button>
+              <button class="ts-filter" id="tsf-rejected" onclick="setTsFilter('rejected')">Rejected</button>
+            </div>
+          </div>
+          <div class="ts-library-grid" id="ts-library-grid">
+            <div class="empty-state"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg><p>No templates yet. Import your first PDF.</p></div>
+          </div>
+        </div>
+
+        <!-- RIGHT: Reviewer -->
+        <div class="ts-reviewer-col" id="ts-reviewer-col">
+          <div class="ts-reviewer-empty" id="ts-reviewer-empty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+            <p>Select a template from the library to review</p>
+          </div>
+          <div class="ts-reviewer-body" id="ts-reviewer-body" style="display:none;">
+
+            <!-- Reviewer header -->
+            <div class="ts-reviewer-header">
+              <div>
+                <div class="ts-reviewer-name" id="ts-rev-name">—</div>
+                <div class="ts-reviewer-meta" id="ts-rev-meta">—</div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <span class="ts-status-pill" id="ts-rev-status-pill">review</span>
+                <button class="btn-secondary" style="font-size:12px;padding:6px 12px;" onclick="tsRejectTemplate()">Reject</button>
+                <button class="btn-primary" style="font-size:12px;padding:6px 12px;" onclick="tsApproveTemplate()">Approve</button>
+              </div>
+            </div>
+
+            <!-- Page nav + panels -->
+            <div class="ts-panels-row">
+              <!-- Original -->
+              <div class="ts-panel">
+                <div class="ts-panel-label">ORIGINAL PDF</div>
+                <div class="ts-page-viewer" id="ts-orig-viewer">
+                  <img id="ts-orig-img" src="" style="width:100%;border-radius:6px;display:block;" />
+                </div>
+              </div>
+              <!-- Replica -->
+              <div class="ts-panel">
+                <div class="ts-panel-label" style="justify-content:space-between;">
+                  <span>HTML / CSS REPLICA</span>
+                  <button class="ts-small-btn" onclick="tsToggleDiff()">Toggle diff overlay</button>
+                </div>
+                <div class="ts-page-viewer" id="ts-replica-viewer" style="position:relative;">
+                  <iframe id="ts-replica-frame" style="width:100%;height:100%;border:none;border-radius:6px;background:#fff;"></iframe>
+                  <div id="ts-diff-overlay" style="display:none;position:absolute;inset:0;background:rgba(79,142,247,0.12);border-radius:6px;pointer-events:none;border:2px solid #4f8ef7;"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Page navigator -->
+            <div class="ts-page-nav">
+              <button class="ts-nav-btn" onclick="tsChangePage(-1)">‹ Prev</button>
+              <span id="ts-page-indicator" style="font-size:12px;color:var(--text-secondary);">Page 1 of 1</span>
+              <button class="ts-nav-btn" onclick="tsChangePage(1)">Next ›</button>
+            </div>
+
+            <!-- Analysis + Comments side panel -->
+            <div class="ts-side-panel">
+              <div class="ts-side-section">
+                <div class="ts-side-title">FIDELITY</div>
+                <div class="ts-analysis-grid" id="ts-analysis-grid"></div>
+              </div>
+              <div class="ts-side-section" style="flex:1;display:flex;flex-direction:column;">
+                <div class="ts-side-title">REVIEW NOTES</div>
+                <div class="ts-comment-list" id="ts-comment-list"></div>
+                <textarea class="ts-comment-input" id="ts-comment-input" placeholder="Add a note or flag an issue..."></textarea>
+                <div style="display:flex;gap:6px;margin-top:6px;">
+                  <button class="btn-secondary" style="font-size:11px;padding:5px 10px;" onclick="tsAddComment('flag')">⚑ Flag</button>
+                  <button class="btn-primary" style="font-size:11px;padding:5px 10px;" onclick="tsAddComment('note')">Add note</button>
+                </div>
+              </div>
+              <div class="ts-side-section">
+                <div class="ts-side-title">USE TEMPLATE</div>
+                <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Copy CSS variables to clipboard for direct use in the document builder.</p>
+                <button class="btn-secondary" style="font-size:12px;width:100%;" onclick="tsCopyCss()">Copy CSS variables</button>
+              </div>
+            </div>
+
+          </div>
+        </div>
+      </div>
+    </div>
+    
     <!-- MAP GENERATOR -->
     <div class="page" id="page-map-generator">
       <div class="page-header">
