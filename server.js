@@ -382,6 +382,219 @@ app.post('/api/geocode', async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// ── Template Library ─────────────────────────────────────────
+// In-memory store — swap for a DB (SQLite, Postgres) when ready.
+// Each entry shape:
+// { id, name, description, tags, status, pages, cssOverrides,
+//   analysis, thumbnail, createdAt, updatedAt, comments[] }
+let templateLibrary = [];
+
+// List all templates (optionally filter by status)
+app.get('/api/templates', (_, res) => {
+  res.json({ ok: true, templates: templateLibrary });
+});
+
+// Get single template
+app.get('/api/templates/:id', (req, res) => {
+  const t = templateLibrary.find(t => t.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true, template: t });
+});
+
+// Save / update a template
+app.post('/api/templates', express.json(), (req, res) => {
+  const { id, name, description, tags, status, pages,
+          cssOverrides, analysis, thumbnail } = req.body;
+  if (!name) return res.status(400).json({ error: 'name required' });
+
+  const now = new Date().toISOString();
+
+  if (id) {
+    // Update existing
+    const idx = templateLibrary.findIndex(t => t.id === id);
+    if (idx === -1) return res.status(404).json({ error: 'Not found' });
+    templateLibrary[idx] = {
+      ...templateLibrary[idx],
+      name, description, tags, status, pages,
+      cssOverrides, analysis, thumbnail,
+      updatedAt: now,
+    };
+    return res.json({ ok: true, template: templateLibrary[idx] });
+  }
+
+  // Create new
+  const template = {
+    id: `tpl_${Date.now()}`,
+    name, description: description || '',
+    tags: tags || [],
+    status: status || 'review',
+    pages: pages || [],
+    cssOverrides: cssOverrides || {},
+    analysis: analysis || null,
+    thumbnail: thumbnail || null,
+    comments: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  templateLibrary.unshift(template);
+  res.json({ ok: true, template });
+});
+
+// Update status only (approve / reject / review)
+app.patch('/api/templates/:id/status', express.json(), (req, res) => {
+  const t = templateLibrary.find(t => t.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  t.status = req.body.status || t.status;
+  t.updatedAt = new Date().toISOString();
+  res.json({ ok: true, template: t });
+});
+
+// Add a comment
+app.post('/api/templates/:id/comments', express.json(), (req, res) => {
+  const t = templateLibrary.find(t => t.id === req.params.id);
+  if (!t) return res.status(404).json({ error: 'Not found' });
+  const comment = {
+    id: `c_${Date.now()}`,
+    author: req.body.author || 'Team',
+    text: req.body.text,
+    type: req.body.type || 'note',   // 'note' | 'flag'
+    page: req.body.page || null,
+    createdAt: new Date().toISOString(),
+  };
+  t.comments.push(comment);
+  t.updatedAt = new Date().toISOString();
+  res.json({ ok: true, comment });
+});
+
+// Delete a template
+app.delete('/api/templates/:id', (req, res) => {
+  const before = templateLibrary.length;
+  templateLibrary = templateLibrary.filter(t => t.id !== req.params.id);
+  if (templateLibrary.length === before) return res.status(404).json({ error: 'Not found' });
+  res.json({ ok: true });
+});
+
+// Analyze a template PDF — same multi-pass vision as /api/analyze-template
+// but also saves the result to the library automatically
+app.post('/api/templates/analyze', upload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file' });
+  const name    = req.body.name || req.file.originalname.replace(/\.pdf$/i, '');
+  const tags    = req.body.tags ? JSON.parse(req.body.tags) : [];
+  const isPdf   = req.file.mimetype === 'application/pdf' || req.file.originalname.endsWith('.pdf');
+
+  let pageImages = [];
+
+  if (isPdf) {
+    try {
+      const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
+      if (fromBuffer) {
+        const convert = fromBuffer(req.file.buffer, {
+          density: 150, format: 'jpeg',
+          width: 1650, height: 1275,
+          preserveAspectRatio: true,
+          savePath: '/tmp', saveFilename: 'tpl',
+        });
+        for (let i = 1; i <= 10; i++) {
+          try {
+            const result = await convert(i, { responseType: 'buffer' });
+            if (result?.buffer) {
+              pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
+            }
+          } catch { break; }
+        }
+      }
+    } catch (e) { console.log('pdf2pic unavailable:', e.message); }
+  }
+
+  if (!pageImages.length && req.file.buffer.length < 20 * 1024 * 1024) {
+    // Fall back to native PDF — send as document
+    pageImages = null; // signal to use direct PDF path
+  }
+
+  // Build vision content
+  let content = [];
+  if (pageImages && pageImages.length > 0) {
+    content.push({ type: 'text', text: `Analyzing ${pageImages.length} pages of a CRE document template.` });
+    pageImages.forEach(pg => {
+      content.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
+      content.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
+    });
+  } else if (pageImages === null) {
+    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } });
+  } else {
+    return res.status(400).json({ error: 'Could not process PDF. Max 20MB.' });
+  }
+
+  content.push({ type: 'text', text: buildStylePrompt('copy', pageImages && pageImages.length > 0) });
+
+  let analysis;
+  try {
+    const d = await claude({ model: 'claude-sonnet-4-6', max_tokens: 5000, messages: [{ role: 'user', content }] });
+    const raw = d.content?.[0]?.text || '{}';
+    analysis = JSON.parse(raw.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    return res.status(500).json({ error: 'Vision analysis failed: ' + e.message });
+  }
+
+  // CSS override pass (always run for library templates)
+  let cssOverrides = {};
+  if (pageImages && pageImages.length > 0) {
+    try {
+      const cssContent = [
+        { type: 'text', text: '--- Page 1 ---' },
+        { type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } },
+        pageImages[1] ? { type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } } : null,
+        {
+          type: 'text', text: `Generate CSS custom properties to exactly replicate this template.
+Return ONLY valid JSON mapping CSS variable names to values:
+{
+  "--doc-primary":"#001a4d","--doc-secondary":"#0057b8","--doc-accent":"#c8a96e",
+  "--doc-text":"#1a2332","--doc-bg":"#ffffff","--doc-rule":"#0057b8",
+  "--doc-header-bg":"#001a4d","--doc-footer-bg":"#001a4d","--doc-footer-h":"28px",
+  "--doc-heading-font":"'Playfair Display', serif","--doc-body-font":"'Inter', sans-serif",
+  "--doc-number-font":"'Playfair Display', serif","--doc-heading-size":"22pt",
+  "--doc-body-size":"10.5pt","--doc-heading-wt":"500","--doc-line-height":"1.7",
+  "--doc-corner-r":"4px","--doc-pad-top":"0.45in","--doc-pad-right":"0.5in",
+  "--doc-pad-bottom":"0.45in","--doc-pad-left":"0.5in","--doc-accent-bar-h":"5px",
+  "--doc-sidebar-w":"2.1in","--doc-stat-bg":"#001a4d","--doc-stat-text":"#ffffff",
+  "--doc-stat-accent":"#c8a96e"
+}`,
+        },
+      ].filter(Boolean);
+      const cd = await claude({ model: 'claude-sonnet-4-6', max_tokens: 1500, messages: [{ role: 'user', content: cssContent }] });
+      const craw = cd.content?.[0]?.text || '{}';
+      cssOverrides = JSON.parse(craw.replace(/```json|```/g, '').trim());
+    } catch (e) { console.log('CSS pass failed:', e.message); }
+  }
+
+  // Use page 1 image as thumbnail
+  const thumbnail = pageImages && pageImages[0]
+    ? `data:image/jpeg;base64,${pageImages[0].base64}`
+    : null;
+
+  // Build page specs for the library record
+  const pages = (pageImages || []).map((pg, i) => ({
+    page: pg.page,
+    thumbnail: `data:image/jpeg;base64,${pg.base64}`,
+    layout: analysis.pageLayouts?.[i] || null,
+  }));
+
+  // Save to library
+  const now = new Date().toISOString();
+  const template = {
+    id: `tpl_${Date.now()}`,
+    name, description: analysis.aesthetic || '',
+    tags, status: 'review',
+    pages, cssOverrides, analysis,
+    thumbnail,
+    comments: [],
+    createdAt: now,
+    updatedAt: now,
+  };
+  templateLibrary.unshift(template);
+
+  res.json({ ok: true, template, pagesAnalyzed: (pageImages || []).length });
+});
 
 // ── SPA fallback ────────────────────────────────────────────
 app.get('*', (_, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
