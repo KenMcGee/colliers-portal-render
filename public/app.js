@@ -660,6 +660,9 @@ function buildDocument(prop,fin,broker,rentRoll,ai,sections,disclaimer,docLabel,
 
   const scBdr  = statStyle==='light-outlined' ? `border:1.5px solid ${C.secondary};` : '';
 
+  // ── Helpers ──────────────────────────────────────────────────
+  const H=(hex,a)=>hex2rgba(hex,a);
+
   // ── Shared CSS ───────────────────────────────────────────────
   const css=`
 @import url('https://fonts.googleapis.com/css2?${gfUrl}&display=swap');
@@ -694,8 +697,6 @@ function buildDocument(prop,fin,broker,rentRoll,ai,sections,disclaimer,docLabel,
 .color-band-accent{background:${C.accent};padding:10px 14px;border-radius:${ovCorR}px;margin-bottom:12px;}
 `;
 
-  // ── Helpers ──────────────────────────────────────────────────
-  const H=(hex,a)=>hex2rgba(hex,a);
   const photos=[...S.photos]; let pi=0;
   const nextPhoto=()=>photos[pi++]||null;
 
