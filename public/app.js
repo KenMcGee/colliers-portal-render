@@ -1788,8 +1788,14 @@ function tsRenderRevPage() {
 
   // Original — show extracted thumbnail
   const origImg = $('ts-orig-img');
-  if (pg?.thumbnail) { origImg.src = pg.thumbnail; origImg.style.display = 'block'; }
-  else { origImg.style.display = 'none'; }
+  const origViewer = $('ts-orig-viewer');
+  if (pg?.thumbnail) {
+    origImg.src = pg.thumbnail;
+    origImg.style.display = 'block';
+    origViewer.innerHTML = `<img src="${pg.thumbnail}" style="width:100%;height:100%;object-fit:contain;display:block;" />`;
+  } else {
+    origViewer.innerHTML = `<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text-muted);font-size:12px;padding:12px;text-align:center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Page thumbnail unavailable — PDF was analyzed natively without page rendering.</span></div>`;
+  }
 
   // Replica — render CSS variables into an iframe
   const frame = $('ts-replica-frame');
@@ -2033,7 +2039,8 @@ async function runImport() {
     tsBuildPickerGrid();
     hideImportModal();
     tsOpenTemplate(d.template.id);
-    toast(`"${name}" imported — ${d.pagesAnalyzed} pages analyzed. Ready for review.`);
+    const methodNote = d.method === 'native-pdf' ? ' (native PDF mode — thumbnails unavailable)' : '';
+toast(`"${name}" imported — ${d.pagesAnalyzed} pages analyzed${methodNote}. Ready for review.`);
   } catch (e) {
     st.textContent = '✗ ' + (e.message || 'Import failed');
     st.className = 'extract-status err';
