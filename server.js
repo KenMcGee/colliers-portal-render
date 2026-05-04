@@ -90,69 +90,65 @@ app.post('/api/analyze-template', upload.single('file'), async (req, res) => {
   const mode = req.body.mode || 'inspiration';
   const isPdf = req.file.mimetype === 'application/pdf' || req.file.originalname.endsWith('.pdf');
 
-  let pageImages = [];   // { page, base64, mediaType }
-  let usedDirectPdf = false;
+  let pageImages = [];
+  let usedNativePdf = false;
 
-  // ── Pass 1: PDF → images ──────────────────────────────────
+  // ── Attempt pdf2pic → page images ──────────────────────────
   if (isPdf) {
     try {
       const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
       if (fromBuffer) {
-        // Higher resolution than Session 1 — 150dpi, wider for landscape OMs
         const convert = fromBuffer(req.file.buffer, {
-          density: 150,
-          format: 'jpeg',
-          width: 1650,
-          height: 1275,
+          density: 150, format: 'jpeg',
+          width: 1650, height: 1275,
           preserveAspectRatio: true,
-          savePath: '/tmp',
-          saveFilename: 'pg',
+          savePath: '/tmp', saveFilename: 'pg',
         });
-
-        // Try up to 8 pages — cover + first 7 section pages
         for (let i = 1; i <= 8; i++) {
           try {
             const result = await convert(i, { responseType: 'buffer' });
             if (result?.buffer) {
               pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
             }
-          } catch {
-            // Hit end of document
-            break;
-          }
+          } catch { break; }
         }
       }
-    } catch (convErr) {
-      console.log('pdf2pic unavailable:', convErr.message);
+    } catch (e) {
+      console.log('pdf2pic unavailable, falling back to native PDF:', e.message);
     }
   }
 
-  // ── Build Claude Vision content ───────────────────────────
+  // ── Fall back to native PDF ─────────────────────────────────
+  if (pageImages.length === 0) {
+    if (!isPdf) {
+      return res.status(400).json({ error: 'Only PDF files are supported.' });
+    }
+    if (req.file.buffer.length > 20 * 1024 * 1024) {
+      return res.status(400).json({ error: 'PDF too large for native analysis (max 20MB). Please compress and try again.' });
+    }
+    usedNativePdf = true;
+  }
+
+  // ── Build Claude vision content ─────────────────────────────
   let content = [];
 
-  if (pageImages.length > 0) {
-    content.push({
-      type: 'text',
-      text: `I'm sending you ${pageImages.length} rendered pages from a CRE document template. Analyze each page carefully.`,
-    });
-    // Send all page images, labelled
+  if (!usedNativePdf) {
+    content.push({ type: 'text', text: `I'm sending you ${pageImages.length} rendered pages from a CRE document template. Analyze each page carefully.` });
     pageImages.forEach(pg => {
       content.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
       content.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
     });
-  } else if (isPdf && req.file.buffer.length < 20 * 1024 * 1024) {
-    // Fall back to native PDF reading if under 20MB
-    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } });
-    usedDirectPdf = true;
   } else {
-    return res.status(400).json({
-      error: 'Could not process file. Please upload a PDF under 20MB, or install pdf2pic on the server for larger files.',
+    content.push({
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
     });
+    content.push({ type: 'text', text: 'Analyze this CRE document template carefully. Examine every page — cover, interior sections, financial tables, and footer.' });
   }
 
-  content.push({ type: 'text', text: buildStylePrompt(mode, pageImages.length > 0) });
+  content.push({ type: 'text', text: buildStylePrompt(mode, !usedNativePdf) });
 
-  // ── Pass 2: Vision analysis ───────────────────────────────
+  // ── Pass 1: Style analysis ──────────────────────────────────
   let analysis;
   try {
     const d = await claude({
@@ -166,51 +162,61 @@ app.post('/api/analyze-template', upload.single('file'), async (req, res) => {
     return res.status(500).json({ error: 'Vision analysis failed: ' + e.message });
   }
 
-  // ── Pass 3 (copy mode): generate CSS custom properties ────
-  // A second targeted Vision call asks Claude to output the exact
-  // CSS needed to reproduce colours, spacing, and typography.
-  // This gets injected into the document renderer as overrides.
+  // ── Pass 2: CSS extraction (copy mode or native PDF) ────────
+  // Run on copy mode always, and also on native PDF since we need
+  // precise values and the first pass prompt is focused on structure
   let cssOverrides = null;
-  if (mode === 'copy' && pageImages.length > 0) {
+  if (mode === 'copy' || usedNativePdf) {
     try {
-      const cssContent = [
-        { type: 'text', text: '--- Page 1 (Cover) ---' },
-        { type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } },
-        pageImages[1] && { type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } },
-        {
-          type: 'text',
-          text: `Based on these pages, generate CSS custom properties that exactly replicate the visual design.
-Return ONLY a valid JSON object mapping CSS variable names to values — no other text:
+      let cssContent = [];
+
+      if (!usedNativePdf && pageImages.length > 0) {
+        cssContent.push({ type: 'text', text: 'Here are the first pages of the template:' });
+        cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } });
+        if (pageImages[1]) {
+          cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } });
+        }
+      } else {
+        cssContent.push({
+          type: 'document',
+          source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
+        });
+      }
+
+      cssContent.push({
+        type: 'text',
+        text: `Based on this template, generate CSS custom properties that exactly replicate its visual design.
+Sample colors directly from the document — do not guess or use generic values.
+Return ONLY a valid JSON object, no markdown, no explanation:
 {
-  "--doc-primary":      "#001a4d",
-  "--doc-secondary":    "#0057b8",
-  "--doc-accent":       "#c8a96e",
-  "--doc-text":         "#1a2332",
-  "--doc-bg":           "#ffffff",
-  "--doc-rule":         "#0057b8",
-  "--doc-header-bg":    "#001a4d",
-  "--doc-footer-bg":    "#001a4d",
-  "--doc-footer-h":     "28px",
+  "--doc-primary": "#001a4d",
+  "--doc-secondary": "#0057b8",
+  "--doc-accent": "#c8a96e",
+  "--doc-text": "#1a2332",
+  "--doc-bg": "#ffffff",
+  "--doc-rule": "#0057b8",
+  "--doc-header-bg": "#001a4d",
+  "--doc-footer-bg": "#001a4d",
+  "--doc-footer-h": "28px",
   "--doc-heading-font": "'Playfair Display', serif",
-  "--doc-body-font":    "'Inter', sans-serif",
-  "--doc-number-font":  "'Playfair Display', serif",
+  "--doc-body-font": "'Inter', sans-serif",
+  "--doc-number-font": "'Playfair Display', serif",
   "--doc-heading-size": "22pt",
-  "--doc-body-size":    "10.5pt",
-  "--doc-heading-wt":   "500",
-  "--doc-line-height":  "1.7",
-  "--doc-corner-r":     "4px",
-  "--doc-pad-top":      "0.45in",
-  "--doc-pad-right":    "0.5in",
-  "--doc-pad-bottom":   "0.45in",
-  "--doc-pad-left":     "0.5in",
+  "--doc-body-size": "10.5pt",
+  "--doc-heading-wt": "500",
+  "--doc-line-height": "1.7",
+  "--doc-corner-r": "4px",
+  "--doc-pad-top": "0.45in",
+  "--doc-pad-right": "0.5in",
+  "--doc-pad-bottom": "0.45in",
+  "--doc-pad-left": "0.5in",
   "--doc-accent-bar-h": "5px",
-  "--doc-sidebar-w":    "2.1in",
-  "--doc-stat-bg":      "#001a4d",
-  "--doc-stat-text":    "#ffffff",
-  "--doc-stat-accent":  "#c8a96e"
+  "--doc-sidebar-w": "2.1in",
+  "--doc-stat-bg": "#001a4d",
+  "--doc-stat-text": "#ffffff",
+  "--doc-stat-accent": "#c8a96e"
 }`,
-        },
-      ].filter(Boolean);
+      });
 
       const cd = await claude({
         model: 'claude-sonnet-4-6',
@@ -220,7 +226,7 @@ Return ONLY a valid JSON object mapping CSS variable names to values — no othe
       const craw = cd.content?.[0]?.text || '{}';
       cssOverrides = JSON.parse(craw.replace(/```json|```/g, '').trim());
     } catch (e) {
-      console.log('CSS override pass failed (non-fatal):', e.message);
+      console.log('CSS extraction pass failed (non-fatal):', e.message);
     }
   }
 
@@ -229,8 +235,8 @@ Return ONLY a valid JSON object mapping CSS variable names to values — no othe
     analysis,
     cssOverrides,
     mode,
-    pagesAnalyzed: pageImages.length,
-    usedDirectPdf,
+    pagesAnalyzed: usedNativePdf ? (analysis.pageLayouts?.length || 1) : pageImages.length,
+    usedNativePdf,
   });
 });
 
