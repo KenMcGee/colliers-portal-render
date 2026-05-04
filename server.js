@@ -474,126 +474,205 @@ app.delete('/api/templates/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// Analyze a template PDF — same multi-pass vision as /api/analyze-template
-// but also saves the result to the library automatically
+// ── Template analyze: robust multi-path PDF analysis ─────────
+// Strategy:
+//   Path A (preferred): pdf2pic converts pages → images → Claude Vision
+//   Path B (fallback):  Send PDF natively to Claude — works without system deps
+// Both paths produce the same analysis JSON and CSS overrides.
+// Page thumbnails are only available on Path A.
 app.post('/api/templates/analyze', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
-  const name    = req.body.name || req.file.originalname.replace(/\.pdf$/i, '');
-  const tags    = req.body.tags ? JSON.parse(req.body.tags) : [];
-  const isPdf   = req.file.mimetype === 'application/pdf' || req.file.originalname.endsWith('.pdf');
 
-  let pageImages = [];
+  const name = req.body.name || req.file.originalname.replace(/\.pdf$/i, '');
+  const tags = req.body.tags ? JSON.parse(req.body.tags) : [];
 
-  if (isPdf) {
-    try {
-      const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
-      if (fromBuffer) {
-        const convert = fromBuffer(req.file.buffer, {
-          density: 150, format: 'jpeg',
-          width: 1650, height: 1275,
-          preserveAspectRatio: true,
-          savePath: '/tmp', saveFilename: 'tpl',
-        });
-        for (let i = 1; i <= 10; i++) {
-          try {
-            const result = await convert(i, { responseType: 'buffer' });
-            if (result?.buffer) {
-              pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
-            }
-          } catch { break; }
-        }
+  // ── Attempt Path A: pdf2pic → page images ──────────────────
+  let pageImages = [];   // [{ page, base64, mediaType }]
+  let usedNativePdf = false;
+
+  try {
+    const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
+    if (fromBuffer) {
+      const convert = fromBuffer(req.file.buffer, {
+        density: 150, format: 'jpeg',
+        width: 1650, height: 1275,
+        preserveAspectRatio: true,
+        savePath: '/tmp', saveFilename: 'tpl',
+      });
+      for (let i = 1; i <= 10; i++) {
+        try {
+          const result = await convert(i, { responseType: 'buffer' });
+          if (result?.buffer) {
+            pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
+          }
+        } catch { break; }
       }
-    } catch (e) { console.log('pdf2pic unavailable:', e.message); }
+    }
+  } catch (e) {
+    console.log('pdf2pic unavailable, falling back to native PDF:', e.message);
   }
 
-  if (!pageImages.length && req.file.buffer.length < 20 * 1024 * 1024) {
-    // Fall back to native PDF — send as document
-    pageImages = null; // signal to use direct PDF path
+  // ── Path B: native PDF (no page images, but Claude reads full doc) ─
+  if (pageImages.length === 0) {
+    if (req.file.buffer.length > 20 * 1024 * 1024) {
+      return res.status(400).json({ error: 'PDF too large for native analysis (max 20MB). Please compress the PDF and try again.' });
+    }
+    usedNativePdf = true;
   }
 
-  // Build vision content
+  // ── Build vision content ────────────────────────────────────
   let content = [];
-  if (pageImages && pageImages.length > 0) {
-    content.push({ type: 'text', text: `Analyzing ${pageImages.length} pages of a CRE document template.` });
+
+  if (!usedNativePdf) {
+    // Path A: send each page image
+    content.push({ type: 'text', text: `I'm sending you ${pageImages.length} rendered pages from a CRE document template. Analyze each page carefully.` });
     pageImages.forEach(pg => {
       content.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
       content.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
     });
-  } else if (pageImages === null) {
-    content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } });
   } else {
-    return res.status(400).json({ error: 'Could not process PDF. Max 20MB.' });
+    // Path B: send the raw PDF
+    content.push({
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
+    });
+    content.push({ type: 'text', text: 'Analyze this CRE document template carefully. Examine every page — cover, interior sections, financial tables, and footer.' });
   }
 
-  content.push({ type: 'text', text: buildStylePrompt('copy', pageImages && pageImages.length > 0) });
+  content.push({ type: 'text', text: buildStylePrompt('copy', !usedNativePdf) });
 
+  // ── Pass 1: Full style analysis ─────────────────────────────
   let analysis;
   try {
-    const d = await claude({ model: 'claude-sonnet-4-6', max_tokens: 5000, messages: [{ role: 'user', content }] });
+    const d = await claude({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 5000,
+      messages: [{ role: 'user', content }],
+    });
     const raw = d.content?.[0]?.text || '{}';
     analysis = JSON.parse(raw.replace(/```json|```/g, '').trim());
   } catch (e) {
     return res.status(500).json({ error: 'Vision analysis failed: ' + e.message });
   }
 
-  // CSS override pass (always run for library templates)
+  // ── Pass 2: CSS variable extraction ────────────────────────
+  // Run this pass whether we used images or native PDF
   let cssOverrides = {};
-  if (pageImages && pageImages.length > 0) {
-    try {
-      const cssContent = [
-        { type: 'text', text: '--- Page 1 ---' },
-        { type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } },
-        pageImages[1] ? { type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } } : null,
-        {
-          type: 'text', text: `Generate CSS custom properties to exactly replicate this template.
-Return ONLY valid JSON mapping CSS variable names to values:
+  try {
+    let cssContent = [];
+
+    if (!usedNativePdf && pageImages.length > 0) {
+      // Use first two page images for precise color sampling
+      cssContent.push({ type: 'text', text: 'Here are the first pages of the template:' });
+      cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } });
+      if (pageImages[1]) {
+        cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } });
+      }
+    } else {
+      // Native PDF — re-send for CSS extraction
+      cssContent.push({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
+      });
+    }
+
+    cssContent.push({
+      type: 'text',
+      text: `Based on this template, generate CSS custom properties that exactly replicate its visual design.
+Sample colors directly from the document — do not guess or use generic values.
+Return ONLY a valid JSON object, no markdown, no explanation:
 {
-  "--doc-primary":"#001a4d","--doc-secondary":"#0057b8","--doc-accent":"#c8a96e",
-  "--doc-text":"#1a2332","--doc-bg":"#ffffff","--doc-rule":"#0057b8",
-  "--doc-header-bg":"#001a4d","--doc-footer-bg":"#001a4d","--doc-footer-h":"28px",
-  "--doc-heading-font":"'Playfair Display', serif","--doc-body-font":"'Inter', sans-serif",
-  "--doc-number-font":"'Playfair Display', serif","--doc-heading-size":"22pt",
-  "--doc-body-size":"10.5pt","--doc-heading-wt":"500","--doc-line-height":"1.7",
-  "--doc-corner-r":"4px","--doc-pad-top":"0.45in","--doc-pad-right":"0.5in",
-  "--doc-pad-bottom":"0.45in","--doc-pad-left":"0.5in","--doc-accent-bar-h":"5px",
-  "--doc-sidebar-w":"2.1in","--doc-stat-bg":"#001a4d","--doc-stat-text":"#ffffff",
-  "--doc-stat-accent":"#c8a96e"
+  "--doc-primary": "#001a4d",
+  "--doc-secondary": "#0057b8",
+  "--doc-accent": "#c8a96e",
+  "--doc-text": "#1a2332",
+  "--doc-bg": "#ffffff",
+  "--doc-rule": "#0057b8",
+  "--doc-header-bg": "#001a4d",
+  "--doc-footer-bg": "#001a4d",
+  "--doc-footer-h": "28px",
+  "--doc-heading-font": "'Playfair Display', serif",
+  "--doc-body-font": "'Inter', sans-serif",
+  "--doc-number-font": "'Playfair Display', serif",
+  "--doc-heading-size": "22pt",
+  "--doc-body-size": "10.5pt",
+  "--doc-heading-wt": "500",
+  "--doc-line-height": "1.7",
+  "--doc-corner-r": "4px",
+  "--doc-pad-top": "0.45in",
+  "--doc-pad-right": "0.5in",
+  "--doc-pad-bottom": "0.45in",
+  "--doc-pad-left": "0.5in",
+  "--doc-accent-bar-h": "5px",
+  "--doc-sidebar-w": "2.1in",
+  "--doc-stat-bg": "#001a4d",
+  "--doc-stat-text": "#ffffff",
+  "--doc-stat-accent": "#c8a96e"
 }`,
-        },
-      ].filter(Boolean);
-      const cd = await claude({ model: 'claude-sonnet-4-6', max_tokens: 1500, messages: [{ role: 'user', content: cssContent }] });
-      const craw = cd.content?.[0]?.text || '{}';
-      cssOverrides = JSON.parse(craw.replace(/```json|```/g, '').trim());
-    } catch (e) { console.log('CSS pass failed:', e.message); }
+    });
+
+    const cd = await claude({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1500,
+      messages: [{ role: 'user', content: cssContent }],
+    });
+    const craw = cd.content?.[0]?.text || '{}';
+    cssOverrides = JSON.parse(craw.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    console.log('CSS extraction pass failed (non-fatal):', e.message);
+    // cssOverrides stays {} — analysis colors will be used as fallback
   }
 
-  // Use page 1 image as thumbnail
-  const thumbnail = pageImages && pageImages[0]
-    ? `data:image/jpeg;base64,${pageImages[0].base64}`
-    : null;
+  // ── Build page records ──────────────────────────────────────
+  // Path A: we have real thumbnails per page
+  // Path B: create placeholder page records from pageLayouts in analysis
+  let pages = [];
+  if (!usedNativePdf && pageImages.length > 0) {
+    pages = pageImages.map((pg, i) => ({
+      page: pg.page,
+      thumbnail: `data:image/jpeg;base64,${pg.base64}`,
+      layout: analysis.pageLayouts?.[i] || null,
+    }));
+  } else {
+    // Derive page count and types from the analysis
+    const layouts = analysis.pageLayouts || [];
+    const inferredCount = layouts.length || 1;
+    pages = Array.from({ length: inferredCount }, (_, i) => ({
+      page: i + 1,
+      thumbnail: null,   // no image available from native PDF path
+      layout: layouts[i] || null,
+    }));
+  }
 
-  // Build page specs for the library record
-  const pages = (pageImages || []).map((pg, i) => ({
-    page: pg.page,
-    thumbnail: `data:image/jpeg;base64,${pg.base64}`,
-    layout: analysis.pageLayouts?.[i] || null,
-  }));
+  // ── Use first page thumbnail if available ───────────────────
+  const thumbnail = pages[0]?.thumbnail || null;
 
-  // Save to library
+  // ── Save to library ─────────────────────────────────────────
   const now = new Date().toISOString();
   const template = {
     id: `tpl_${Date.now()}`,
-    name, description: analysis.aesthetic || '',
-    tags, status: 'review',
-    pages, cssOverrides, analysis,
+    name,
+    description: analysis.aesthetic || '',
+    tags,
+    status: 'review',
+    pages,
+    cssOverrides,
+    analysis,
     thumbnail,
     comments: [],
     createdAt: now,
     updatedAt: now,
+    analyzedVia: usedNativePdf ? 'native-pdf' : 'page-images',
   };
   templateLibrary.unshift(template);
 
-  res.json({ ok: true, template, pagesAnalyzed: (pageImages || []).length });
+  res.json({
+    ok: true,
+    template,
+    pagesAnalyzed: pages.length,
+    method: usedNativePdf ? 'native-pdf' : 'page-images',
+    cssVariablesExtracted: Object.keys(cssOverrides).length,
+  });
 });
 
 // ── SPA fallback ────────────────────────────────────────────
