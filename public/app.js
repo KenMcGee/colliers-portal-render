@@ -331,10 +331,11 @@ async function analyzeTemplate() {
 
     updateFontPreview();
 
-    const pagesMsg=d.pagesAnalyzed>0?`${d.pagesAnalyzed} pages analyzed`:'Document analyzed';
-    const cssMsg=d.cssOverrides?` · CSS overrides generated`:'';
-    st.textContent=`✓ ${pagesMsg}${cssMsg} — ${a.aesthetic||'Design settings updated'}`;
-    st.className='extract-status ok';
+    const pagesMsg = `${d.pagesAnalyzed} page${d.pagesAnalyzed !== 1 ? 's' : ''} analyzed`;
+    const methodMsg = d.usedNativePdf ? ' (native PDF mode)' : '';
+    const cssMsg = d.cssOverrides ? ` · ${Object.keys(d.cssOverrides).length} CSS variables extracted` : '';
+    st.textContent = `✓ ${pagesMsg}${methodMsg}${cssMsg} — ${a.aesthetic || 'Design settings updated'}`;
+    st.className = 'extract-status ok';
 
     // Show CSS override summary if copy mode
     if(mode==='copy'&&d.cssOverrides){
