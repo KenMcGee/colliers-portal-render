@@ -67,11 +67,18 @@
         <!-- STEP 1: Setup -->
         <div class="step-panel active" id="step-panel-1">
           <div class="panel-card">
-            
+
+            <!-- TEMPLATE LIBRARY PICKER -->
+            <div id="library-picker-section" style="margin-bottom:28px;">
+              <h3>Choose Template</h3>
+              <p class="field-hint">Select an approved template from Template Studio. This controls the full page layout and design. If none selected, use the pre-built styles below.</p>
+              <div class="ts-library-picker-grid" id="ts-picker-grid">
+                <div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No approved templates yet — <a href="#" onclick="navigate('template-studio');return false;" style="color:var(--colliers-mid);">open Template Studio</a> to import one.</div>
+              </div>
             </div>
 
             <!-- PRE-BUILT LAYOUT LIBRARY -->
-            <h3 style="margin-top:24px;">Pre-Built Design Templates</h3>
+            <h3>Pre-Built Design Templates</h3>
             <p class="field-hint">Pick a built-in style as a starting point, or leave blank for manual settings below.</p>
             <div class="preset-template-grid" id="preset-template-grid">
               <div class="preset-tmpl" data-preset="colliers-classic" onclick="applyPresetTemplate('colliers-classic')">
@@ -105,15 +112,8 @@
                 <div class="preset-tmpl-desc">White, thin rules, airy</div>
               </div>
             </div>
-            <!-- TEMPLATE LIBRARY PICKER (feeds from Template Studio) -->
-            <div id="library-picker-section" style="margin-bottom:28px;">
-              <h3>Choose Template</h3>
-              <p class="field-hint">Approved templates from Template Studio. Selecting one overrides the design settings below.</p>
-              <div class="ts-library-picker-grid" id="ts-picker-grid">
-                <div style="font-size:12px;color:var(--text-muted);padding:8px 0;">No approved templates yet — <a href="#" onclick="navigate('template-studio');return false;" style="color:var(--colliers-mid);">open Template Studio</a> to import one.</div>
-              </div>
-            </div>
-            <h3>Document Type</h3>
+
+            <h3 style="margin-top:24px;">Document Type</h3>
             <div class="doc-type-grid">
               <div class="doc-type-card active" data-type="om" onclick="selectDocType('om')"><div class="doc-type-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg></div><div class="doc-type-name">Offering Memorandum</div><div class="doc-type-desc">Full marketing package — exec summary, property details, financials, market overview.</div><div class="doc-type-sections">8–12 pages</div></div>
               <div class="doc-type-card" data-type="bov" onclick="selectDocType('bov')"><div class="doc-type-icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><div class="doc-type-name">Broker Opinion of Value</div><div class="doc-type-desc">Valuation analysis — comparable sales, income approach, pricing recommendation.</div><div class="doc-type-sections">5–8 pages</div></div>
@@ -196,8 +196,8 @@
               <div class="form-group"><label>Cap Rate (%)</label><input type="number" id="fin-caprate" step="0.01" oninput="calcFinancials()" /></div>
               <div class="form-group"><label>Occupancy (%)</label><input type="number" id="fin-occupancy" placeholder="100" step="0.1" /></div>
               <div class="form-group"><label>WALT (Years)</label><input type="number" id="fin-walt" placeholder="4.2" step="0.1" /></div>
-              <div class="form-group"><label>Debt Service (Annual)</label><input type="number" id="fin-debt" placeholder="" /></div>
-              <div class="form-group"><label>DSCR</label><input type="number" id="fin-dscr" placeholder="" step="0.01" /></div>
+              <div class="form-group"><label>Debt Service (Annual)</label><input type="number" id="fin-debt" /></div>
+              <div class="form-group"><label>DSCR</label><input type="number" id="fin-dscr" step="0.01" /></div>
             </div>
             <div class="calc-results"><div class="calc-result-item"><span class="calc-label">Price / SF</span><span class="calc-value" id="calc-ppsf">—</span></div><div class="calc-result-item"><span class="calc-label">NOI</span><span class="calc-value" id="calc-noi">—</span></div><div class="calc-result-item"><span class="calc-label">Cap Rate</span><span class="calc-value" id="calc-caprate">—</span></div><div class="calc-result-item"><span class="calc-label">GRM</span><span class="calc-value" id="calc-grm">—</span></div></div>
             <h3 style="margin-top:24px;">Rent Roll</h3>
@@ -223,9 +223,8 @@
         <!-- STEP 5: Design -->
         <div class="step-panel" id="step-panel-5">
           <div class="panel-card">
-            <div class="design-ai-notice"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>If you uploaded and analyzed a template in Step 1, these fields are auto-populated. Override any value, or leave blank for AI to choose.</span></div>
+            <div class="design-ai-notice"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span>These settings apply when using a Pre-Built template. If you selected a Template Studio template in Step 1, its design is fixed and these settings are ignored.</span></div>
             <h3>Color Palette</h3>
-            <p class="field-hint">Enter hex values or leave blank — AI will choose based on your template or a professional CRE palette.</p>
             <div class="color-palette-grid">
               <div class="color-swatch-field"><label>Primary (headers, backgrounds)</label><div class="color-input-row"><input type="color" id="color-primary-picker" value="#001a4d" oninput="syncColorInput('primary')" /><input type="text" id="color-primary" placeholder="#001a4d" maxlength="7" oninput="syncColorPicker('primary')" /><div class="color-preview" id="color-preview-primary" style="background:#001a4d;"></div></div></div>
               <div class="color-swatch-field"><label>Secondary (accents, buttons)</label><div class="color-input-row"><input type="color" id="color-secondary-picker" value="#0057b8" oninput="syncColorInput('secondary')" /><input type="text" id="color-secondary" placeholder="#0057b8" maxlength="7" oninput="syncColorPicker('secondary')" /><div class="color-preview" id="color-preview-secondary" style="background:#0057b8;"></div></div></div>
@@ -289,7 +288,7 @@
         <div><h1 id="preview-title">Document Preview</h1><p class="page-subtitle" id="preview-subtitle"></p></div>
         <div class="header-actions"><button class="btn-secondary" onclick="navigate('om-builder')">← Back</button><button class="btn-primary" onclick="window.print()"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>Print / Save as PDF</button></div>
       </div>
-      <div class="print-instructions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>To save as PDF: Print → Destination: Save as PDF → Paper size matches your selection → Disable headers/footers → Save</div>
+      <div class="print-instructions"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>To save as PDF: Print → Destination: Save as PDF → Paper size matches your selection → Disable headers/footers → Enable background graphics → Save</div>
       <div id="document-preview-container"></div>
     </div>
 
@@ -301,10 +300,10 @@
       </div>
 
       <!-- IMPORT MODAL -->
-      <div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;display:none;align-items:center;justify-content:center;">
+      <div id="import-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:500;align-items:center;justify-content:center;">
         <div style="background:white;border-radius:14px;width:520px;max-width:95vw;padding:28px 32px;box-shadow:0 16px 48px rgba(0,0,0,0.2);">
           <h3 style="margin-bottom:6px;">Import Template</h3>
-          <p class="field-hint" style="margin-bottom:20px;">Upload a PDF — Claude Vision analyzes every page and generates a pixel-accurate HTML/CSS replica.</p>
+          <p class="field-hint" style="margin-bottom:20px;">Upload a PDF — Claude Vision analyzes every page and generates a pixel-accurate HTML/CSS replica with placeholder tags for your data.</p>
           <div class="form-group full" style="margin-bottom:14px;"><label>Template Name</label><input type="text" id="import-name" placeholder="e.g. Industrial OM — Colliers Blue" /></div>
           <div class="form-group full" style="margin-bottom:14px;"><label>Tags (comma separated)</label><input type="text" id="import-tags" placeholder="OM, industrial, landscape" /></div>
           <div class="iupload" id="import-dropzone" onclick="document.getElementById('import-file-input').click()" style="margin-bottom:14px;">
@@ -320,7 +319,7 @@
         </div>
       </div>
 
-      <!-- STUDIO BODY: library + reviewer side by side -->
+      <!-- STUDIO BODY -->
       <div class="ts-layout">
 
         <!-- LEFT: Library -->
@@ -345,60 +344,54 @@
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
             <p>Select a template from the library to review</p>
           </div>
-          <div class="ts-reviewer-body" id="ts-reviewer-body" style="display:none;">
+          <div class="ts-reviewer-body" id="ts-reviewer-body" style="display:none;flex-direction:column;flex:1;overflow:hidden;">
 
-            <!-- Reviewer header -->
             <div class="ts-reviewer-header">
               <div>
                 <div class="ts-reviewer-name" id="ts-rev-name">—</div>
                 <div class="ts-reviewer-meta" id="ts-rev-meta">—</div>
               </div>
               <div style="display:flex;gap:8px;align-items:center;">
-                <span class="ts-status-pill" id="ts-rev-status-pill">review</span>
+                <span class="ts-status-pill review" id="ts-rev-status-pill">Pending Review</span>
                 <button class="btn-secondary" style="font-size:12px;padding:6px 12px;" onclick="tsRejectTemplate()">Reject</button>
                 <button class="btn-primary" style="font-size:12px;padding:6px 12px;" onclick="tsApproveTemplate()">Approve</button>
               </div>
             </div>
 
-            <!-- Page nav + panels -->
             <div class="ts-panels-row">
-              <!-- Original -->
               <div class="ts-panel">
                 <div class="ts-panel-label">ORIGINAL PDF</div>
                 <div class="ts-page-viewer" id="ts-orig-viewer">
-                  <img id="ts-orig-img" src="" style="width:100%;border-radius:6px;display:block;" />
+                  <div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;color:var(--text-muted);font-size:12px;">No preview</div>
                 </div>
               </div>
-              <!-- Replica -->
               <div class="ts-panel">
                 <div class="ts-panel-label" style="justify-content:space-between;">
                   <span>HTML / CSS REPLICA</span>
                   <button class="ts-small-btn" onclick="tsToggleDiff()">Toggle diff overlay</button>
                 </div>
                 <div class="ts-page-viewer" id="ts-replica-viewer" style="position:relative;">
-                  <iframe id="ts-replica-frame" style="width:100%;height:100%;border:none;border-radius:6px;background:#fff;"></iframe>
+                  <iframe id="ts-replica-frame" style="width:100%;height:100%;border:none;border-radius:6px;background:#fff;" scrolling="no"></iframe>
                   <div id="ts-diff-overlay" style="display:none;position:absolute;inset:0;background:rgba(79,142,247,0.12);border-radius:6px;pointer-events:none;border:2px solid #4f8ef7;"></div>
                 </div>
               </div>
             </div>
 
-            <!-- Page navigator -->
             <div class="ts-page-nav">
               <button class="ts-nav-btn" onclick="tsChangePage(-1)">‹ Prev</button>
               <span id="ts-page-indicator" style="font-size:12px;color:var(--text-secondary);">Page 1 of 1</span>
               <button class="ts-nav-btn" onclick="tsChangePage(1)">Next ›</button>
             </div>
 
-            <!-- Analysis + Comments side panel -->
             <div class="ts-side-panel">
               <div class="ts-side-section">
-                <div class="ts-side-title">FIDELITY</div>
+                <div class="ts-side-title">ANALYSIS</div>
                 <div class="ts-analysis-grid" id="ts-analysis-grid"></div>
               </div>
               <div class="ts-side-section" style="flex:1;display:flex;flex-direction:column;">
                 <div class="ts-side-title">REVIEW NOTES</div>
                 <div class="ts-comment-list" id="ts-comment-list"></div>
-                <textarea class="ts-comment-input" id="ts-comment-input" placeholder="Add a note or flag an issue..."></textarea>
+                <textarea class="ts-comment-input" id="ts-comment-input" rows="3" placeholder="Add a note or flag an issue..."></textarea>
                 <div style="display:flex;gap:6px;margin-top:6px;">
                   <button class="btn-secondary" style="font-size:11px;padding:5px 10px;" onclick="tsAddComment('flag')">⚑ Flag</button>
                   <button class="btn-primary" style="font-size:11px;padding:5px 10px;" onclick="tsAddComment('note')">Add note</button>
@@ -406,8 +399,9 @@
               </div>
               <div class="ts-side-section">
                 <div class="ts-side-title">USE TEMPLATE</div>
-                <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Copy CSS variables to clipboard for direct use in the document builder.</p>
-                <button class="btn-secondary" style="font-size:12px;width:100%;" onclick="tsCopyCss()">Copy CSS variables</button>
+                <p style="font-size:11px;color:var(--text-muted);margin-bottom:8px;">Approved templates appear in the OM/BOV Builder template picker automatically.</p>
+                <button class="btn-secondary" style="font-size:12px;width:100%;margin-bottom:6px;" onclick="tsCopyCss()">Copy CSS variables</button>
+                <button class="btn-danger-soft" style="font-size:12px;width:100%;" onclick="tsDeleteTemplate()">Delete template</button>
               </div>
             </div>
 
@@ -415,7 +409,7 @@
         </div>
       </div>
     </div>
-    
+
     <!-- MAP GENERATOR -->
     <div class="page" id="page-map-generator">
       <div class="page-header">
@@ -513,12 +507,11 @@
             <label>Headshot Photo</label>
             <div class="iupload" onclick="document.getElementById('bf-photo-input').click()" style="max-width:300px;"><input type="file" id="bf-photo-input" style="display:none" accept=".jpg,.jpeg,.png,.webp" onchange="handleBrokerPhoto(this)" /><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg><span>Upload headshot</span></div>
             <div id="bf-photo-preview" style="margin-top:8px;"></div>
-            <input type="hidden" id="bf-photo-data" />
           </div>
         </div>
         <div style="display:flex;gap:10px;margin-top:14px;"><button class="btn-primary" onclick="saveBroker()">Save Profile</button><button class="btn-secondary" onclick="cancelBrokerForm()">Cancel</button></div>
       </div>
-      <div id="broker-grid" class="broker-profiles-grid"><div class="empty-state"><svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg><p>No broker profiles yet.</p><button class="btn-primary" onclick="showBrokerForm()">Add First Broker</button></div></div>
+      <div id="broker-grid" class="broker-profiles-grid"></div>
     </div>
 
     <!-- SETTINGS -->
