@@ -81,257 +81,6 @@ Spreadsheet:\n${text}` }],
 });
 
 
-// ── template analysis — Session 3: multi-pass vision ─────────
-// Pass 1: convert PDF pages to images at high resolution
-// Pass 2: send all images to Claude Vision with structured prompt
-// Pass 3 (copy mode only): second Vision call to generate CSS vars
-app.post('/api/analyze-template', upload.single('file'), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file' });
-  const mode = req.body.mode || 'inspiration';
-  const isPdf = req.file.mimetype === 'application/pdf' || req.file.originalname.endsWith('.pdf');
-
-  let pageImages = [];
-  let usedNativePdf = false;
-
-  // ── Attempt pdf2pic → page images ──────────────────────────
-  if (isPdf) {
-    try {
-      const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
-      if (fromBuffer) {
-        const convert = fromBuffer(req.file.buffer, {
-          density: 150, format: 'jpeg',
-          width: 1650, height: 1275,
-          preserveAspectRatio: true,
-          savePath: '/tmp', saveFilename: 'pg',
-        });
-        for (let i = 1; i <= 8; i++) {
-          try {
-            const result = await convert(i, { responseType: 'buffer' });
-            if (result?.buffer) {
-              pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
-            }
-          } catch { break; }
-        }
-      }
-    } catch (e) {
-      console.log('pdf2pic unavailable, falling back to native PDF:', e.message);
-    }
-  }
-
-  // ── Fall back to native PDF ─────────────────────────────────
-  if (pageImages.length === 0) {
-    if (!isPdf) {
-      return res.status(400).json({ error: 'Only PDF files are supported.' });
-    }
-    if (req.file.buffer.length > 20 * 1024 * 1024) {
-      return res.status(400).json({ error: 'PDF too large for native analysis (max 20MB). Please compress and try again.' });
-    }
-    usedNativePdf = true;
-  }
-
-  // ── Build Claude vision content ─────────────────────────────
-  let content = [];
-
-  if (!usedNativePdf) {
-    content.push({ type: 'text', text: `I'm sending you ${pageImages.length} rendered pages from a CRE document template. Analyze each page carefully.` });
-    pageImages.forEach(pg => {
-      content.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
-      content.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
-    });
-  } else {
-    content.push({
-      type: 'document',
-      source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
-    });
-    content.push({ type: 'text', text: 'Analyze this CRE document template carefully. Examine every page — cover, interior sections, financial tables, and footer.' });
-  }
-
-  content.push({ type: 'text', text: buildStylePrompt(mode, !usedNativePdf) });
-
-  // ── Pass 1: Style analysis ──────────────────────────────────
-  let analysis;
-  try {
-    const d = await claude({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 5000,
-      messages: [{ role: 'user', content }],
-    });
-    const raw = d.content?.[0]?.text || '{}';
-    analysis = JSON.parse(raw.replace(/```json|```/g, '').trim());
-  } catch (e) {
-    return res.status(500).json({ error: 'Vision analysis failed: ' + e.message });
-  }
-
-  // ── Pass 2: CSS extraction (copy mode or native PDF) ────────
-  // Run on copy mode always, and also on native PDF since we need
-  // precise values and the first pass prompt is focused on structure
-  let cssOverrides = null;
-  if (mode === 'copy' || usedNativePdf) {
-    try {
-      let cssContent = [];
-
-      if (!usedNativePdf && pageImages.length > 0) {
-        cssContent.push({ type: 'text', text: 'Here are the first pages of the template:' });
-        cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } });
-        if (pageImages[1]) {
-          cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } });
-        }
-      } else {
-        cssContent.push({
-          type: 'document',
-          source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
-        });
-      }
-
-      cssContent.push({
-        type: 'text',
-        text: `Based on this template, generate CSS custom properties that exactly replicate its visual design.
-Sample colors directly from the document — do not guess or use generic values.
-Return ONLY a valid JSON object, no markdown, no explanation:
-{
-  "--doc-primary": "#001a4d",
-  "--doc-secondary": "#0057b8",
-  "--doc-accent": "#c8a96e",
-  "--doc-text": "#1a2332",
-  "--doc-bg": "#ffffff",
-  "--doc-rule": "#0057b8",
-  "--doc-header-bg": "#001a4d",
-  "--doc-footer-bg": "#001a4d",
-  "--doc-footer-h": "28px",
-  "--doc-heading-font": "'Playfair Display', serif",
-  "--doc-body-font": "'Inter', sans-serif",
-  "--doc-number-font": "'Playfair Display', serif",
-  "--doc-heading-size": "22pt",
-  "--doc-body-size": "10.5pt",
-  "--doc-heading-wt": "500",
-  "--doc-line-height": "1.7",
-  "--doc-corner-r": "4px",
-  "--doc-pad-top": "0.45in",
-  "--doc-pad-right": "0.5in",
-  "--doc-pad-bottom": "0.45in",
-  "--doc-pad-left": "0.5in",
-  "--doc-accent-bar-h": "5px",
-  "--doc-sidebar-w": "2.1in",
-  "--doc-stat-bg": "#001a4d",
-  "--doc-stat-text": "#ffffff",
-  "--doc-stat-accent": "#c8a96e"
-}`,
-      });
-
-      const cd = await claude({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
-        messages: [{ role: 'user', content: cssContent }],
-      });
-      const craw = cd.content?.[0]?.text || '{}';
-      cssOverrides = JSON.parse(craw.replace(/```json|```/g, '').trim());
-    } catch (e) {
-      console.log('CSS extraction pass failed (non-fatal):', e.message);
-    }
-  }
-
-  return res.json({
-    ok: true,
-    analysis,
-    cssOverrides,
-    mode,
-    pagesAnalyzed: usedNativePdf ? (analysis.pageLayouts?.length || 1) : pageImages.length,
-    usedNativePdf,
-  });
-});
-
-
-
-function buildStylePrompt(mode, hasImages) {
-  const depth = mode === 'copy'
-    ? `EXACT REPLICATION MODE: Measure this template precisely so it can be reproduced exactly. Extract specific proportions, exact hex colors sampled from the image, exact font sizes in points, exact padding amounts. Be precise — "dark blue" is unacceptable, give hex codes.`
-    : `STYLE INSPIRATION MODE: Capture design language, mood, color relationships, and compositional principles. Describe the spirit and feel accurately.`;
-
-  return `${depth}
-
-${hasImages
-  ? 'Carefully analyze each rendered page image. For each page, identify its type and extract its layout structure.'
-  : 'Analyze this document carefully.'}
-
-Return ONLY valid JSON — no markdown, no text before or after the JSON:
-{
-  "mode": "${mode}",
-  "pageLayouts": [
-    {
-      "pageType": "cover",
-      "layoutStructure": "full-bleed-photo|split-left-photo|split-right-photo|sidebar-right|two-column|single-column|top-band",
-      "photoPosition": "full-bleed|left|right|top|inset-right|inset-left|none",
-      "hasColoredHeader": true,
-      "hasSidebar": false,
-      "sidebarWidthPercent": 28,
-      "description": "Specific layout description"
-    }
-  ],
-  "colors": {
-    "primary": "#001a4d",
-    "secondary": "#0057b8",
-    "accent": "#c8a96e",
-    "text": "#1a2332",
-    "bg": "#ffffff",
-    "rule": "#0057b8",
-    "headerBg": "#001a4d",
-    "footerBg": "#001a4d",
-    "statCardBg": "#001a4d",
-    "statCardText": "#ffffff",
-    "highlightBg": "#f5f0e0"
-  },
-  "typography": {
-    "suggestedHeading": "Playfair Display",
-    "suggestedBody": "Inter",
-    "suggestedNumber": "Playfair Display",
-    "headingWeight": "500",
-    "bodyFontSizePt": 10.5,
-    "headingFontSizePt": 22,
-    "lineHeightBody": 1.7,
-    "useAllCapsEyebrows": true,
-    "useAllCapsHeadings": false
-  },
-  "accentElements": {
-    "usesFullBleedPhotos": true,
-    "usesSplitLayout": false,
-    "usesColoredBands": true,
-    "usesSidebarPanels": true,
-    "usesLargeStatCards": true,
-    "usesPullQuotes": true,
-    "usesDecorativeBars": true,
-    "cornerRadiusPx": 4,
-    "photoStyle": "full-bleed|inset|bordered|rounded",
-    "headerStyle": "dark-overlay|colored-band|split|minimal|top-band",
-    "sectionDividerStyle": "colored-rule|thin-rule|colored-band|whitespace|decorative-dots",
-    "statCardStyle": "dark-filled|light-outlined|accent-filled|transparent-bordered"
-  },
-  "coverPage": {
-    "photoTreatment": "full-bleed-dark-overlay|split-left-photo|split-right-photo|top-band|inset",
-    "photoOpacity": 0.55,
-    "titleFontSizePt": 36,
-    "titlePosition": "bottom-left|bottom-right|center|top-left",
-    "statsPosition": "bottom-strip|right-column|none",
-    "accentBarPosition": "bottom|top|none",
-    "accentBarThicknessPx": 5
-  },
-  "designLanguage": {
-    "density": "dense|balanced|airy",
-    "formality": "luxury|professional|modern|minimal",
-    "photoEmphasis": "dominant|balanced|subtle",
-    "typographyContrast": "high|medium|low",
-    "overallMood": "one sentence"
-  },
-  "cssVariables": {
-    "pagePaddingTopIn": 0.45,
-    "pagePaddingRightIn": 0.5,
-    "pagePaddingBottomIn": 0.45,
-    "pagePaddingLeftIn": 0.5,
-    "lineHeightBody": 1.7,
-    "tableRowHeightPt": 20
-  },
-  "aesthetic": "One sentence describing the visual personality of this document"
-}`;
-}
 
 
 // ── photo upload (broker headshots) ─────────────────────────
@@ -480,142 +229,374 @@ app.delete('/api/templates/:id', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Template analyze: robust multi-path PDF analysis ─────────
-// Strategy:
-//   Path A (preferred): pdf2pic converts pages → images → Claude Vision
-//   Path B (fallback):  Send PDF natively to Claude — works without system deps
-// Both paths produce the same analysis JSON and CSS overrides.
-// Page thumbnails are only available on Path A.
+// ── Template analyze — Option A: Claude generates HTML per page ──
+// Pass 1: Extract page images (pdf2pic) or use native PDF
+// Pass 2: For each page, Claude generates complete HTML/CSS with placeholders
+// Pass 3: Claude identifies all data fields and returns a field map
 app.post('/api/templates/analyze', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
 
   const name = req.body.name || req.file.originalname.replace(/\.pdf$/i, '');
   const tags = req.body.tags ? JSON.parse(req.body.tags) : [];
 
-  // ── Attempt Path A: pdf2pic → page images ──────────────────
-  let pageImages = [];   // [{ page, base64, mediaType }]
+  // ── Attempt pdf2pic → page images ──────────────────────────
+  let pageImages = [];
   let usedNativePdf = false;
 
   try {
     const { fromBuffer } = await import('pdf2pic').catch(() => ({ fromBuffer: null }));
     if (fromBuffer) {
       const convert = fromBuffer(req.file.buffer, {
-        density: 150, format: 'jpeg',
-        width: 1650, height: 1275,
-        preserveAspectRatio: true,
-        savePath: '/tmp', saveFilename: 'tpl',
+        density: 150, format: 'jpeg', width: 1650, height: 1275,
+        preserveAspectRatio: true, savePath: '/tmp', saveFilename: 'tpl',
       });
-      for (let i = 1; i <= 10; i++) {
+      for (let i = 1; i <= 12; i++) {
         try {
           const result = await convert(i, { responseType: 'buffer' });
-          if (result?.buffer) {
-            pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
-          }
+          if (result?.buffer) pageImages.push({ page: i, base64: b64(result.buffer), mediaType: 'image/jpeg' });
         } catch { break; }
       }
     }
-  } catch (e) {
-    console.log('pdf2pic unavailable, falling back to native PDF:', e.message);
-  }
+  } catch (e) { console.log('pdf2pic unavailable:', e.message); }
 
-  // ── Path B: native PDF (no page images, but Claude reads full doc) ─
   if (pageImages.length === 0) {
     if (req.file.buffer.length > 20 * 1024 * 1024) {
-      return res.status(400).json({ error: 'PDF too large for native analysis (max 20MB). Please compress the PDF and try again.' });
+      return res.status(400).json({ error: 'PDF too large for native analysis (max 20MB). Please compress and try again.' });
     }
     usedNativePdf = true;
   }
 
-  // ── Build vision content ────────────────────────────────────
-  let content = [];
-
-  if (!usedNativePdf) {
-    // Path A: send each page image
-    content.push({ type: 'text', text: `I'm sending you ${pageImages.length} rendered pages from a CRE document template. Analyze each page carefully.` });
-    pageImages.forEach(pg => {
-      content.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
-      content.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
-    });
-  } else {
-    // Path B: send the raw PDF
-    content.push({
-      type: 'document',
-      source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
-    });
-    content.push({ type: 'text', text: 'Analyze this CRE document template carefully. Examine every page — cover, interior sections, financial tables, and footer.' });
-  }
-
-  content.push({ type: 'text', text: buildStylePrompt('copy', !usedNativePdf) });
-
-  // ── Pass 1: Full style analysis ─────────────────────────────
-  let analysis;
+  // ── Pass 1: Global style extraction ────────────────────────
+  // Get colors, fonts, and design language once for the whole document
+  let globalStyle = {};
   try {
-    const d = await claude({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 5000,
-      messages: [{ role: 'user', content }],
-    });
-    const raw = d.content?.[0]?.text || '{}';
-    analysis = JSON.parse(raw.replace(/```json|```/g, '').trim());
-  } catch (e) {
-    return res.status(500).json({ error: 'Vision analysis failed: ' + e.message });
-  }
-
-  // ── Pass 2: CSS variable extraction ────────────────────────
-  // Run this pass whether we used images or native PDF
-  let cssOverrides = {};
-  try {
-    let cssContent = [];
-
-    if (!usedNativePdf && pageImages.length > 0) {
-      // Use first two page images for precise color sampling
-      cssContent.push({ type: 'text', text: 'Here are the first pages of the template:' });
-      cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[0].mediaType, data: pageImages[0].base64 } });
-      if (pageImages[1]) {
-        cssContent.push({ type: 'image', source: { type: 'base64', media_type: pageImages[1].mediaType, data: pageImages[1].base64 } });
-      }
-    } else {
-      // Native PDF — re-send for CSS extraction
-      cssContent.push({
-        type: 'document',
-        source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) },
+    let styleContent = [];
+    if (!usedNativePdf) {
+      styleContent.push({ type: 'text', text: `Analyze these ${pageImages.length} pages of a CRE document template.` });
+      // Send first 3 pages for style analysis — enough to capture the design system
+      pageImages.slice(0, 3).forEach(pg => {
+        styleContent.push({ type: 'text', text: `\n--- Page ${pg.page} ---` });
+        styleContent.push({ type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } });
       });
+    } else {
+      styleContent.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } });
     }
-
-    cssContent.push({
-      type: 'text',
-      text: `Based on this template, generate CSS custom properties that exactly replicate its visual design.
-Sample colors directly from the document — do not guess or use generic values.
-Return ONLY a valid JSON object, no markdown, no explanation:
+    styleContent.push({ type: 'text', text: `Extract the complete design system from this template. Sample exact hex colors from the document.
+Return ONLY valid JSON, no markdown:
 {
-  "--doc-primary": "#001a4d",
-  "--doc-secondary": "#0057b8",
-  "--doc-accent": "#c8a96e",
-  "--doc-text": "#1a2332",
-  "--doc-bg": "#ffffff",
-  "--doc-rule": "#0057b8",
-  "--doc-header-bg": "#001a4d",
-  "--doc-footer-bg": "#001a4d",
-  "--doc-footer-h": "28px",
-  "--doc-heading-font": "'Playfair Display', serif",
-  "--doc-body-font": "'Inter', sans-serif",
-  "--doc-number-font": "'Playfair Display', serif",
-  "--doc-heading-size": "22pt",
-  "--doc-body-size": "10.5pt",
-  "--doc-heading-wt": "500",
-  "--doc-line-height": "1.7",
-  "--doc-corner-r": "4px",
-  "--doc-pad-top": "0.45in",
-  "--doc-pad-right": "0.5in",
-  "--doc-pad-bottom": "0.45in",
-  "--doc-pad-left": "0.5in",
-  "--doc-accent-bar-h": "5px",
-  "--doc-sidebar-w": "2.1in",
-  "--doc-stat-bg": "#001a4d",
-  "--doc-stat-text": "#ffffff",
-  "--doc-stat-accent": "#c8a96e"
-}`,
+  "colors": {
+    "primary": "#001a4d",
+    "secondary": "#0057b8",
+    "accent": "#c8a96e",
+    "text": "#1a2332",
+    "bg": "#ffffff",
+    "headerBg": "#001a4d",
+    "footerBg": "#001a4d",
+    "statCardBg": "#001a4d",
+    "statCardText": "#ffffff",
+    "rule": "#0057b8"
+  },
+  "fonts": {
+    "heading": "Playfair Display",
+    "body": "Inter",
+    "number": "Playfair Display",
+    "headingWeight": "500",
+    "bodyWeight": "400",
+    "headingSizePt": 22,
+    "bodySizePt": 10.5,
+    "numberSizePt": 18,
+    "lineHeight": 1.7,
+    "useAllCaps": true
+  },
+  "spacing": {
+    "pagePaddingIn": "0.45in 0.5in",
+    "sectionGapPt": 16,
+    "footerHeightPx": 28,
+    "accentBarHeightPx": 5,
+    "cornerRadiusPx": 4
+  },
+  "pageSize": {
+    "widthIn": 11,
+    "heightIn": 8.5,
+    "orientation": "landscape"
+  },
+  "aesthetic": "One sentence describing the visual personality"
+}` });
+
+    const sd = await claude({ model: 'claude-sonnet-4-6', max_tokens: 2000, messages: [{ role: 'user', content: styleContent }] });
+    globalStyle = JSON.parse((sd.content?.[0]?.text || '{}').replace(/```json|```/g, '').trim());
+  } catch (e) {
+    console.log('Style extraction failed:', e.message);
+    globalStyle = {};
+  }
+
+  const C = globalStyle.colors || {};
+  const F = globalStyle.fonts || {};
+  const SP = globalStyle.spacing || {};
+  const PS = globalStyle.pageSize || { widthIn: 11, heightIn: 8.5 };
+
+  // Google Fonts URL for use in generated pages
+  const fontFamilies = [...new Set([F.heading, F.body, F.number].filter(f => f && f !== 'Georgia'))];
+  const gfUrl = fontFamilies.map(f => `family=${(f||'').replace(/ /g, '+')}:wght@300;400;500;600;700`).join('&');
+
+  // ── Pass 2: Generate HTML per page ─────────────────────────
+  // For each page, send the image + style system and ask Claude
+  // to produce a complete, self-contained HTML/CSS reproduction
+  // with {{PLACEHOLDER}} tags for all data fields.
+  const PLACEHOLDER_GUIDE = `
+Replace every piece of content-specific text with a placeholder tag using this exact format: {{FIELD_NAME}}
+Use these standard field names where they apply:
+  {{PROP_NAME}}        — property name / title
+  {{PROP_ADDRESS}}     — street address
+  {{PROP_CITY_STATE}}  — city, state zip
+  {{PROP_SF}}          — building square footage
+  {{PROP_YEAR}}        — year built
+  {{PROP_TYPE}}        — property type
+  {{PROP_ZONING}}      — zoning
+  {{PROP_ACRES}}       — lot size in acres
+  {{PROP_PARKING}}     — parking spaces
+  {{PROP_CLEARHEIGHT}} — clear height
+  {{ASKING_PRICE}}     — asking price
+  {{PRICE_PSF}}        — price per square foot
+  {{CAP_RATE}}         — cap rate percentage
+  {{NOI}}              — net operating income
+  {{OCCUPANCY}}        — occupancy percentage
+  {{WALT}}             — weighted average lease term
+  {{GPR}}              — gross potential rent
+  {{EGI}}              — effective gross income
+  {{OPEX}}             — operating expenses
+  {{EXEC_SUMMARY}}     — executive summary paragraph(s)
+  {{PROP_DESCRIPTION}} — property description paragraph(s)
+  {{LOCATION_OVERVIEW}}— location/market overview paragraph(s)
+  {{HIGHLIGHTS_LIST}}  — investment highlights bullet list
+  {{RENT_ROLL_TABLE}}  — rent roll table
+  {{BROKER_NAME}}      — broker full name
+  {{BROKER_TITLE}}     — broker title
+  {{BROKER_PHONE}}     — broker phone
+  {{BROKER_EMAIL}}     — broker email
+  {{BROKER_LICENSE}}   — broker license number
+  {{FIRM_NAME}}        — firm/company name
+  {{DOC_TYPE}}         — document type (e.g. Offering Memorandum)
+  {{PAGE_NUMBER}}      — page number
+  {{DISCLAIMER}}       — legal disclaimer text
+For any other content-specific text not covered above, invent a descriptive placeholder e.g. {{MARKET_STAT_1}}, {{TENANT_1_NAME}}, etc.
+Keep all purely decorative text (e.g. "CONFIDENTIAL", section divider text, column headers) as literal text — only replace actual property/financial data.`;
+
+  const PAGE_HTML_PROMPT = (pageNum, total) => `You are reproducing page ${pageNum} of ${total} from a CRE document template as pixel-accurate HTML/CSS.
+
+DESIGN SYSTEM (apply exactly):
+- Page size: ${PS.widthIn}in × ${PS.heightIn}in
+- Primary color: ${C.primary || '#001a4d'}
+- Secondary color: ${C.secondary || '#0057b8'}  
+- Accent color: ${C.accent || '#c8a96e'}
+- Text color: ${C.text || '#1a2332'}
+- Background: ${C.bg || '#ffffff'}
+- Header background: ${C.headerBg || C.primary || '#001a4d'}
+- Footer background: ${C.footerBg || C.primary || '#001a4d'}
+- Stat card background: ${C.statCardBg || C.primary || '#001a4d'}
+- Stat card text: ${C.statCardText || '#ffffff'}
+- Rule/divider color: ${C.rule || C.secondary || '#0057b8'}
+- Heading font: ${F.heading || 'Playfair Display'}, weight ${F.headingWeight || '500'}, size ${F.headingSizePt || 22}pt
+- Body font: ${F.body || 'Inter'}, weight ${F.bodyWeight || '400'}, size ${F.bodySizePt || 10.5}pt
+- Number font: ${F.number || F.heading || 'Playfair Display'}, size ${F.numberSizePt || 18}pt
+- Line height: ${F.lineHeight || 1.7}
+- All-caps eyebrows: ${F.useAllCaps !== false ? 'yes' : 'no'}
+- Page padding: ${SP.pagePaddingIn || '0.45in 0.5in'}
+- Footer height: ${SP.footerHeightPx || 28}px
+- Accent bar height: ${SP.accentBarHeightPx || 5}px
+- Corner radius: ${SP.cornerRadiusPx || 4}px
+
+FONT IMPORT: Use this Google Fonts URL in your <style> block:
+@import url('https://fonts.googleapis.com/css2?${gfUrl}&display=swap');
+
+${PLACEHOLDER_GUIDE}
+
+REQUIREMENTS:
+1. Reproduce the EXACT layout of this page — same number of columns, same photo placement, same sidebar if present, same grid proportions
+2. The outer container must be exactly ${PS.widthIn}in wide and ${PS.heightIn}in tall with overflow:hidden
+3. Use CSS flexbox or grid to replicate the layout — no tables for layout
+4. Every photo/image area should be a div with background: ${C.primary || '#001a4d'}20; and a centered label showing what photo goes there (e.g. "PROPERTY PHOTO", "AERIAL PHOTO")
+5. All data fields replaced with {{PLACEHOLDER}} tags as specified above
+6. Include a realistic amount of placeholder content so the layout proportions are visible
+7. The HTML must be completely self-contained — no external dependencies except the Google Fonts import
+
+Return ONLY the complete HTML document starting with <!DOCTYPE html> — no explanation, no markdown fences.`;
+
+  let generatedPages = [];
+
+  if (!usedNativePdf && pageImages.length > 0) {
+    // Generate HTML for each page individually
+    for (let i = 0; i < pageImages.length; i++) {
+      const pg = pageImages[i];
+      try {
+        const d = await claude({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'text', text: `Here is page ${pg.page} of the template:` },
+              { type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } },
+              { type: 'text', text: PAGE_HTML_PROMPT(pg.page, pageImages.length) },
+            ],
+          }],
+        });
+        const html = (d.content?.[0]?.text || '').trim();
+        generatedPages.push({
+          page: pg.page,
+          html: html.startsWith('<!DOCTYPE') ? html : `<!DOCTYPE html><html><body>${html}</body></html>`,
+          thumbnail: `data:image/jpeg;base64,${pg.base64}`,
+          layout: null,
+        });
+      } catch (e) {
+        console.log(`Page ${pg.page} HTML generation failed:`, e.message);
+        generatedPages.push({ page: pg.page, html: null, thumbnail: `data:image/jpeg;base64,${pg.base64}`, layout: null });
+      }
+    }
+  } else {
+    // Native PDF — generate all pages in one call, Claude infers page breaks
+    try {
+      const d = await claude({
+        model: 'claude-sonnet-4-6',
+        max_tokens: 8000,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } },
+            { type: 'text', text: `This is a CRE document template. Reproduce each page as a separate complete HTML document.
+
+${PAGE_HTML_PROMPT('each', 'all')}
+
+Since I cannot show you individual page images, infer each page's layout from the PDF content.
+
+Return a JSON array where each element has:
+- "page": page number (1-based)  
+- "pageType": "cover" | "highlights" | "property" | "financial" | "location" | "rentroll" | "team" | "disclaimer" | "other"
+- "html": the complete HTML document string for that page
+
+Return ONLY valid JSON, no markdown fences.` },
+          ],
+        }],
+      });
+      const raw = (d.content?.[0]?.text || '[]').replace(/```json|```/g, '').trim();
+      const parsed = JSON.parse(raw);
+      generatedPages = parsed.map(p => ({ page: p.page, html: p.html, thumbnail: null, layout: { pageType: p.pageType } }));
+    } catch (e) {
+      return res.status(500).json({ error: 'HTML generation failed: ' + e.message });
+    }
+  }
+
+  // ── Pass 3: Field map ───────────────────────────────────────
+  // Scan all generated HTML for placeholder tags and build a map
+  // of which fields appear on which pages — used by the population
+  // function to know what to substitute
+  const allHtml = generatedPages.map(p => p.html || '').join('\n');
+  const placeholderRegex = /\{\{([A-Z_0-9]+)\}\}/g;
+  const fieldMap = {};
+  let match;
+  while ((match = placeholderRegex.exec(allHtml)) !== null) {
+    const field = match[1];
+    if (!fieldMap[field]) fieldMap[field] = [];
+    const pageIdx = generatedPages.findIndex(p => (p.html || '').includes(`{{${field}}}`));
+    if (pageIdx !== -1 && !fieldMap[field].includes(pageIdx + 1)) {
+      fieldMap[field].push(pageIdx + 1);
+    }
+  }
+
+  // ── Save to library ─────────────────────────────────────────
+  const now = new Date().toISOString();
+  const template = {
+    id: `tpl_${Date.now()}`,
+    name,
+    description: globalStyle.aesthetic || '',
+    tags,
+    status: 'review',
+    pages: generatedPages,
+    globalStyle,
+    fieldMap,
+    thumbnail: generatedPages[0]?.thumbnail || null,
+    comments: [],
+    createdAt: now,
+    updatedAt: now,
+    analyzedVia: usedNativePdf ? 'native-pdf' : 'page-images',
+  };
+  templateLibrary.unshift(template);
+
+  res.json({
+    ok: true,
+    template,
+    pagesAnalyzed: generatedPages.length,
+    fieldsFound: Object.keys(fieldMap).length,
+    method: usedNativePdf ? 'native-pdf' : 'page-images',
+  });
+});
+
+// ── Template render — populate placeholders with real data ────
+// Called at document generation time. Takes a template ID and
+// a data object, returns fully populated HTML pages ready for print.
+app.post('/api/templates/render', async (req, res) => {
+  const { templateId, data } = req.body;
+  if (!templateId) return res.status(400).json({ error: 'templateId required' });
+
+  const template = templateLibrary.find(t => t.id === templateId);
+  if (!template) return res.status(404).json({ error: 'Template not found' });
+  if (template.status !== 'approved') return res.status(400).json({ error: 'Template must be approved before use' });
+
+  // Build the substitution map from the data payload
+  const sub = {
+    PROP_NAME:        data.propName        || '',
+    PROP_ADDRESS:     data.propAddress     || '',
+    PROP_CITY_STATE:  data.propCityState   || '',
+    PROP_SF:          data.propSf          || '',
+    PROP_YEAR:        data.propYear        || '',
+    PROP_TYPE:        data.propType        || '',
+    PROP_ZONING:      data.propZoning      || '',
+    PROP_ACRES:       data.propAcres       || '',
+    PROP_PARKING:     data.propParking     || '',
+    PROP_CLEARHEIGHT: data.propClearHeight || '',
+    ASKING_PRICE:     data.askingPrice     || '',
+    PRICE_PSF:        data.pricePsf        || '',
+    CAP_RATE:         data.capRate         || '',
+    NOI:              data.noi             || '',
+    OCCUPANCY:        data.occupancy       || '',
+    WALT:             data.walt            || '',
+    GPR:              data.gpr             || '',
+    EGI:              data.egi             || '',
+    OPEX:             data.opex            || '',
+    EXEC_SUMMARY:     data.execSummary     || '',
+    PROP_DESCRIPTION: data.propDescription || '',
+    LOCATION_OVERVIEW:data.locationOverview|| '',
+    HIGHLIGHTS_LIST:  data.highlightsList  || '',
+    RENT_ROLL_TABLE:  data.rentRollTable   || '',
+    BROKER_NAME:      data.brokerName      || '',
+    BROKER_TITLE:     data.brokerTitle     || '',
+    BROKER_PHONE:     data.brokerPhone     || '',
+    BROKER_EMAIL:     data.brokerEmail     || '',
+    BROKER_LICENSE:   data.brokerLicense   || '',
+    FIRM_NAME:        data.firmName        || 'Colliers International',
+    DOC_TYPE:         data.docType         || 'Offering Memorandum',
+    DISCLAIMER:       data.disclaimer      || '',
+    ...data.extra,   // any custom placeholders from the template
+  };
+
+  // Substitute placeholders in each page's HTML
+  const populatedPages = template.pages
+    .filter(p => data.sections ? data.sections.includes(p.layout?.pageType || 'other') : true)
+    .map((p, i) => {
+      if (!p.html) return { page: p.page, html: null };
+      let html = p.html;
+      // Page number is dynamic
+      sub.PAGE_NUMBER = String(i + 1);
+      Object.entries(sub).forEach(([key, val]) => {
+        html = html.replaceAll(`{{${key}}}`, val);
+      });
+      // Strip any remaining unfilled placeholders so they don't show as {{FIELD}}
+      html = html.replace(/\{\{[A-Z_0-9]+\}\}/g, '');
+      return { page: p.page, html };
     });
+
+  res.json({ ok: true, pages: populatedPages });
+});
 
     const cd = await claude({
       model: 'claude-sonnet-4-6',
@@ -679,6 +660,114 @@ Return ONLY a valid JSON object, no markdown, no explanation:
     method: usedNativePdf ? 'native-pdf' : 'page-images',
     cssVariablesExtracted: Object.keys(cssOverrides).length,
   });
+});
+
+// ── Template generate — AI narrative + render in one call ────
+app.post('/api/templates/generate', async (req, res) => {
+  const { templateId, prop, fin, broker, rentRoll, sections, firm, city, docType } = req.body;
+  if (!templateId) return res.status(400).json({ error: 'templateId required' });
+
+  const template = templateLibrary.find(t => t.id === templateId);
+  if (!template) return res.status(404).json({ error: 'Template not found' });
+
+  const fmtN = n => { const x = parseFloat(n); return isNaN(x) ? (n||'') : x.toLocaleString('en-US', { maximumFractionDigits: 0 }); };
+  const fmtD = n => { const x = parseFloat(n); return (!x || isNaN(x)) ? '' : '$' + fmtN(x); };
+
+  // Generate AI narratives
+  let ai = {};
+  try {
+    const narrativePrompt = `You are a senior CRE broker at ${firm} writing a ${docType} for a ${prop.propType || 'commercial'} property.
+PROPERTY: ${prop.propName}, ${prop.propAddress}, ${prop.propCity}, ${prop.propState} ${prop.propZip}
+${prop.propSf ? fmtN(prop.propSf) + ' SF' : ''} Built ${prop.propYear || 'N/A'}, Zoning: ${prop.propZoning || 'N/A'}
+Description: ${prop.propDesc || 'N/A'}
+Highlights: ${prop.propHighlights || 'N/A'}
+FINANCIALS: Price ${fmtD(fin.price) || 'N/A'}, NOI ${fmtD(fin.noi) || 'N/A'}, Cap ${fin.capRate || 'N/A'}%, Occupancy ${fin.occupancy || 'N/A'}%, WALT ${fin.walt || 'N/A'} yrs
+RENT ROLL: ${rentRoll?.length ? JSON.stringify(rentRoll) : 'Not provided'}
+Return ONLY valid JSON:
+{
+  "execSummary": "2-3 paragraphs leading with strongest financial fact",
+  "propDescription": "2-3 paragraphs with specific physical details",
+  "locationOverview": "2 paragraphs on the ${prop.propCity} market",
+  "highlightsList": "<ul>${['highlight 1','highlight 2','highlight 3'].map(h=>`<li>${h}</li>`).join('')}</ul>",
+  "tenantSummary": "1-2 paragraphs on tenancy"
+}`;
+    const nd = await claude({ model: 'claude-sonnet-4-6', max_tokens: 4000, messages: [{ role: 'user', content: narrativePrompt }] });
+    ai = JSON.parse((nd.content?.[0]?.text || '{}').replace(/```json|```/g, '').trim());
+  } catch (e) { console.log('Narrative generation failed:', e.message); }
+
+  // Build rent roll HTML table
+  const rentRollHtml = rentRoll?.length ? `<table style="width:100%;border-collapse:collapse;font-size:9pt;">
+    <thead><tr style="background:${template.globalStyle?.colors?.primary||'#001a4d'};color:#fff;">
+      <th style="padding:6px 8px;text-align:left;">Tenant</th><th style="padding:6px 8px;text-align:left;">Suite</th>
+      <th style="padding:6px 8px;text-align:right;">SF</th><th style="padding:6px 8px;text-align:left;">Lease Start</th>
+      <th style="padding:6px 8px;text-align:left;">Lease End</th><th style="padding:6px 8px;text-align:right;">Annual Rent</th>
+      <th style="padding:6px 8px;text-align:right;">$/SF</th>
+    </tr></thead><tbody>
+    ${rentRoll.map((r,i) => {
+      const rpsf = r.sf && r.annualRent ? '$' + (parseFloat(r.annualRent)/parseFloat(r.sf)).toFixed(2) : '—';
+      return `<tr style="background:${i%2===0?'rgba(0,0,0,0.03)':'transparent'}">
+        <td style="padding:5px 8px;border-bottom:1px solid #eee;">${r.tenant||'—'}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee;">${r.suite||'—'}</td>
+        <td style="padding:5px 8px;text-align:right;border-bottom:1px solid #eee;">${r.sf?fmtN(r.sf):'—'}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee;">${r.leaseStart||'—'}</td>
+        <td style="padding:5px 8px;border-bottom:1px solid #eee;">${r.leaseEnd||'—'}</td>
+        <td style="padding:5px 8px;text-align:right;border-bottom:1px solid #eee;">${r.annualRent?fmtD(r.annualRent):'—'}</td>
+        <td style="padding:5px 8px;text-align:right;border-bottom:1px solid #eee;">${rpsf}</td>
+      </tr>`;
+    }).join('')}
+    </tbody></table>` : '';
+
+  // Assemble data payload for render
+  const data = {
+    propName:        prop.propName        || '',
+    propAddress:     prop.propAddress     || '',
+    propCityState:   `${prop.propCity||''}, ${prop.propState||''} ${prop.propZip||''}`.trim(),
+    propSf:          prop.propSf ? fmtN(prop.propSf) + ' SF' : '',
+    propYear:        prop.propYear        || '',
+    propType:        prop.propType        || '',
+    propZoning:      prop.propZoning      || '',
+    propAcres:       prop.propAcres ? prop.propAcres + ' acres' : '',
+    propParking:     prop.propParking ? prop.propParking + ' spaces' : '',
+    propClearHeight: prop.propClearHeight ? prop.propClearHeight + ' ft' : '',
+    askingPrice:     fmtD(fin.price)      || '',
+    pricePsf:        fin.ppsf ? '$' + fin.ppsf + '/SF' : '',
+    capRate:         fin.capRate ? fin.capRate + '%' : '',
+    noi:             fmtD(fin.noi)        || '',
+    occupancy:       fin.occupancy ? fin.occupancy + '%' : '',
+    walt:            fin.walt ? fin.walt + ' years' : '',
+    gpr:             fmtD(fin.gpr)        || '',
+    egi:             fmtD(fin.egi)        || '',
+    opex:            fmtD(fin.opex)       || '',
+    execSummary:     ai.execSummary       || '',
+    propDescription: ai.propDescription   || prop.propDesc || '',
+    locationOverview:ai.locationOverview  || '',
+    highlightsList:  ai.highlightsList    || '',
+    rentRollTable:   rentRollHtml,
+    brokerName:      broker.name          || '',
+    brokerTitle:     broker.title         || '',
+    brokerPhone:     broker.phone         || '',
+    brokerEmail:     broker.email         || '',
+    brokerLicense:   broker.license       || '',
+    firmName:        firm                 || 'Colliers International',
+    docType:         docType              || 'Offering Memorandum',
+    disclaimer:      req.body.disclaimer  || '',
+    sections,
+  };
+
+  // Populate the template
+  const template2 = templateLibrary.find(t => t.id === templateId);
+  const populatedPages = template2.pages.map((p, i) => {
+    if (!p.html) return { page: p.page, html: null };
+    let html = p.html;
+    data.PAGE_NUMBER = String(i + 1);
+    Object.entries(data).forEach(([key, val]) => {
+      if (typeof val === 'string') html = html.replaceAll(`{{${key.toUpperCase()}}}`, val);
+    });
+    html = html.replace(/\{\{[A-Z_0-9]+\}\}/g, '');
+    return { page: p.page, html };
+  });
+
+  res.json({ ok: true, pages: populatedPages, aiGenerated: Object.keys(ai) });
 });
 
 // ── SPA fallback ────────────────────────────────────────────
