@@ -70,15 +70,6 @@ function selectDocType(t){ S.docType=t; document.querySelectorAll('.doc-type-car
 function selectPropType(t){ S.propType=t; document.querySelectorAll('.prop-type-btn').forEach(b=>b.classList.toggle('active',b.dataset.ptype===t)); }
 
 // ── Template mode ────────────────────────────────────────────
-function setTemplateMode(mode) {
-  S.design.mode=mode;
-  $('mode-btn-inspiration').classList.toggle('active',mode==='inspiration');
-  $('mode-btn-copy').classList.toggle('active',mode==='copy');
-  const d=$('mode-description');
-  if(d) d.innerHTML = mode==='copy'
-    ? '<strong>Exact Replication:</strong> Server converts each PDF page to images; Claude Vision measures precise layout proportions, colors, and typography.'
-    : '<strong>Style Inspiration:</strong> Captures design language, mood, and palette for similar-feeling output with creative variation.';
-}
 
 // ── Page settings ────────────────────────────────────────────
 function setOrientation(o) {
@@ -287,34 +278,7 @@ function loadPhotos(files) {
 }
 
 // ── Template analysis (server) ───────────────────────────────
-async function analyzeTemplate() {
-  const files=S.files['template']||[]; if(!files.length){toast('Upload a template file first');return;}
-  const st=$('status-template');
-  const mode=S.design.mode;
-  st.innerHTML=spin()+`Uploading ${files[0].name} (${(files[0].size/1024/1024).toFixed(1)}MB) to server...`;
-  const fd=new FormData(); fd.append('file',files[0]); fd.append('mode',mode);
-  try {
-    st.innerHTML=spin()+'Converting PDF pages to images on server...';
-    const r=await fetch('/api/analyze-template',{method:'POST',body:fd});
-    const d=await r.json(); if(!r.ok) throw new Error(d.error||'Analysis failed');
-    const a=d.analysis;
 
-    // Store full analysis + CSS overrides
-    S.design.analysis=a;
-    S.design.cssOverrides=d.cssOverrides||null;
-
-    // Apply colours from analysis
-    if(a.colors) Object.entries(a.colors).forEach(([k,v])=>setColor(k,v));
-
-    // Apply typography
-    if(a.typography){
-      const hF=GF.find(f=>f.toLowerCase().includes((a.typography.suggestedHeading||'').toLowerCase().split(' ')[0]));
-      const bF=GF.find(f=>f.toLowerCase().includes((a.typography.suggestedBody||'').toLowerCase().split(' ')[0]));
-      const nF=GF.find(f=>f.toLowerCase().includes((a.typography.suggestedNumber||'').toLowerCase().split(' ')[0]));
-      if(hF) $('font-heading').value=hF;
-      if(bF) $('font-body').value=bF;
-      if(nF) $('font-number').value=nF;
-    }
 
     // Map layout structure → our layout selector
     if(a.pageLayouts?.length){
@@ -499,73 +463,142 @@ function saveDraft(){
 
 // ── Generate document ────────────────────────────────────────
 async function generateDocument(){
-  const g=id=>$(id)?.value||'';
-  const settings=JSON.parse(localStorage.getItem('cds_settings')||'{}');
-  const disclaimer=settings.disclaimer||'The information contained herein has been obtained from sources believed to be reliable. Colliers International makes no guarantee, warranty, or representation about it.';
-  const firm=settings.firm||'Colliers International'; const city=settings.city||'Denver, Colorado';
-  const docLabel=S.docType==='om'?'Offering Memorandum':'Broker Opinion of Value';
+  const g = id => $(id)?.value || '';
+  const settings = JSON.parse(localStorage.getItem('cds_settings') || '{}');
+  const disclaimer = settings.disclaimer || 'The information contained herein has been obtained from sources believed to be reliable. Colliers International makes no guarantee, warranty, or representation about it.';
+  const firm = settings.firm || 'Colliers International';
+  const city = settings.city || 'Denver, Colorado';
+  const docLabel = S.docType === 'om' ? 'Offering Memorandum' : 'Broker Opinion of Value';
 
-  const prop={name:g('prop-name')||'Subject Property',address:g('prop-address'),city:g('prop-city'),state:g('prop-state'),zip:g('prop-zip'),county:g('prop-county'),yearBuilt:g('prop-year'),sf:g('prop-sf'),acres:g('prop-acres'),buildings:g('prop-buildings'),units:g('prop-units'),zoning:g('prop-zoning'),parking:g('prop-parking'),clearHeight:g('prop-clearheight'),desc:g('prop-desc'),highlights:g('prop-highlights')};
-  const fin={price:g('fin-price'),ppsf:g('fin-ppsf'),gpr:g('fin-gpr'),vacancy:g('fin-vacancy'),egi:g('fin-egi'),opex:g('fin-opex'),noi:g('fin-noi'),capRate:g('fin-caprate'),occupancy:g('fin-occupancy'),walt:g('fin-walt'),debtService:g('fin-debt'),dscr:g('fin-dscr'),...(S.extractedFin||{})};
-  const broker={name:g('broker-name'),title:g('broker-title'),phone:g('broker-phone'),email:g('broker-email'),license:g('broker-license')};
-  const rentRoll=getRentRoll();
-  const sections=Array.from(document.querySelectorAll('.sections-checklist input:checked')).map(i=>i.dataset.section);
-  const selBrokers=S.brokers.filter(b=>S.selectedBrokers.includes(b.id));
+  const prop = {
+    propName: g('prop-name'), propAddress: g('prop-address'), propCity: g('prop-city'),
+    propState: g('prop-state'), propZip: g('prop-zip'), propCounty: g('prop-county'),
+    propYear: g('prop-year'), propSf: g('prop-sf'), propAcres: g('prop-acres'),
+    propBuildings: g('prop-buildings'), propUnits: g('prop-units'), propZoning: g('prop-zoning'),
+    propParking: g('prop-parking'), propClearHeight: g('prop-clearheight'),
+    propDesc: g('prop-desc'), propHighlights: g('prop-highlights'), propType: S.propType,
+  };
+  const fin = {
+    price: g('fin-price'), ppsf: g('fin-ppsf'), gpr: g('fin-gpr'),
+    vacancy: g('fin-vacancy'), egi: g('fin-egi'), opex: g('fin-opex'),
+    noi: g('fin-noi'), capRate: g('fin-caprate'), occupancy: g('fin-occupancy'),
+    walt: g('fin-walt'), debtService: g('fin-debt'), dscr: g('fin-dscr'),
+    ...(S.extractedFin || {}),
+  };
+  const broker = { name: g('broker-name'), title: g('broker-title'), phone: g('broker-phone'), email: g('broker-email'), license: g('broker-license') };
+  const rentRoll = getRentRoll();
+  const sections = Array.from(document.querySelectorAll('.sections-checklist input:checked')).map(i => i.dataset.section);
+  const selBrokers = S.brokers.filter(b => S.selectedBrokers.includes(b.id));
 
-  const st=$('generate-status'); st.style.display='block'; st.innerHTML=spin()+'Generating AI content...';
+  const st = $('generate-status');
+  st.style.display = 'block';
 
-  let ai={};
-  let fonts={heading:S.design.fonts.heading||'Playfair Display',body:S.design.fonts.body||'Inter',number:S.design.fonts.number||S.design.fonts.heading||'Playfair Display'};
-  const ta=S.design.analysis;
+  // ── Path A: Use a library template ───────────────────────────
+  if (S.selectedLibraryTemplate) {
+    const t = S.selectedLibraryTemplate;
+    st.innerHTML = spin() + `Using template "${t.name}" — generating AI content...`;
 
-  try{
-    if(!S.design.fonts.heading||!S.design.fonts.body){
-      const ctx=ta?`Template style: ${ta.aesthetic}. Formality: ${ta.designLanguage?.formality}. Primary color: ${S.design.colors.primary}.`:`Primary color: ${S.design.colors.primary}. Layout: ${S.design.layout}.`;
-      const fd=await callClaude({model:'claude-sonnet-4-6',max_tokens:150,messages:[{role:'user',content:`Pick Google Fonts for a ${docLabel} (${S.propType} property). ${ctx} Return ONLY JSON: {"heading":"","body":"","number":""} Choose from: ${GF.join(', ')}`}]});
-      try{const fp=JSON.parse((fd.content?.[0]?.text||'{}').replace(/```json|```/g,'').trim());if(fp.heading)fonts.heading=S.design.fonts.heading||fp.heading;if(fp.body)fonts.body=S.design.fonts.body||fp.body;if(fp.number)fonts.number=S.design.fonts.number||fp.number;}catch(e){}
+    try {
+      const r = await fetch('/api/templates/generate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          templateId: t.id,
+          prop, fin, broker, rentRoll, sections,
+          firm, city, docType: docLabel,
+          disclaimer,
+        }),
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || 'Generation failed');
+
+      st.innerHTML = spin() + 'Building document pages...';
+      await new Promise(res => setTimeout(res, 200));
+
+      // Render pages from populated HTML
+      navigate('preview');
+      $('preview-title').textContent = `${prop.propName || 'Document'} — ${docLabel}`;
+      $('preview-subtitle').textContent = `${prop.propAddress}, ${prop.propCity}, ${prop.propState}`;
+
+      const container = $('document-preview-container');
+      container.innerHTML = d.pages
+        .filter(p => p.html)
+        .map(p => `<iframe srcdoc="${p.html.replace(/"/g, '&quot;')}" style="width:${S.page.w}in;height:${S.page.h}in;border:none;display:block;box-shadow:0 4px 24px rgba(0,0,0,0.12);border-radius:3px;background:#fff;" scrolling="no"></iframe>`)
+        .join('');
+
+      injectPrintCSS();
+      st.style.display = 'none';
+
+      // Save project record
+      const proj = { id: Date.now(), docType: S.docType, propType: S.propType, name: prop.propName || 'Untitled', address: `${prop.propAddress}, ${prop.propCity}, ${prop.propState}`, price: fin.price, noi: fin.noi, capRate: fin.capRate, sf: prop.propSf, createdAt: new Date().toLocaleDateString(), status: 'complete', templateUsed: t.name };
+      S.projects = [proj, ...S.projects];
+      localStorage.setItem('cds_projects', JSON.stringify(S.projects));
+      toast(`Document ready — built from "${t.name}" template`);
+
+    } catch (e) {
+      st.innerHTML = `<span style="color:#f5a623;">✗ ${e.message}</span>`;
     }
-    st.innerHTML=spin()+'Writing narratives...';
-    const narrativePrompt=`You are a senior CRE broker at ${firm} writing a ${docLabel} for a ${S.propType} property.
-${S.narrative?'Existing narrative:\n'+S.narrative+'\n\n':''}
-${ta?'Design context from template: '+ta.aesthetic+'. Formality: '+ta.designLanguage?.formality+'.':''}
-PROPERTY: ${prop.name}, ${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}
-${prop.sf?fmtNum(prop.sf)+' SF, ':''} Built ${prop.yearBuilt||'N/A'}, Zoning: ${prop.zoning||'N/A'}, Clear Height: ${prop.clearHeight||'N/A'} ft
-Description: ${prop.desc||'N/A'}
-Highlights: ${prop.highlights||'N/A'}
-FINANCIALS: Price $${fmtNum(fin.price)||'N/A'}, NOI $${fmtNum(fin.noi)||'N/A'}, Cap ${fin.capRate||'N/A'}%, Occupancy ${fin.occupancy||'N/A'}%, WALT ${fin.walt||'N/A'} yrs
-GPR: $${fmtNum(fin.gpr)||'N/A'}, Vacancy: ${fin.vacancy||'N/A'}%, OpEx: $${fmtNum(fin.opex)||'N/A'}
-${fin.debtService?'Debt Service: $'+fmtNum(fin.debtService):''}${fin.dscr?' DSCR: '+fin.dscr:''}
-${S.extractedFin?.recentCapex?'Recent CapEx: '+S.extractedFin.recentCapex:''}
-${S.extractedFin?.additionalNotes?'Notes: '+S.extractedFin.additionalNotes:''}
-RENT ROLL: ${rentRoll.length?JSON.stringify(rentRoll):'Not provided'}
+    return;
+  }
+
+  // ── Path B: Preset / manual design (existing buildDocument) ──
+  st.innerHTML = spin() + 'Generating AI content...';
+
+  let ai = {};
+  let fonts = { heading: S.design.fonts.heading || 'Playfair Display', body: S.design.fonts.body || 'Inter', number: S.design.fonts.number || S.design.fonts.heading || 'Playfair Display' };
+  const ta = S.design.analysis;
+
+  try {
+    if (!S.design.fonts.heading || !S.design.fonts.body) {
+      const ctx = ta ? `Template style: ${ta.aesthetic}. Formality: ${ta.designLanguage?.formality}.` : `Primary color: ${S.design.colors.primary}. Layout: ${S.design.layout}.`;
+      const fd = await callClaude({ model: 'claude-sonnet-4-6', max_tokens: 150, messages: [{ role: 'user', content: `Pick Google Fonts for a ${docLabel}. ${ctx} Return ONLY JSON: {"heading":"","body":"","number":""} Choose from: ${GF.join(', ')}` }] });
+      try { const fp = JSON.parse((fd.content?.[0]?.text || '{}').replace(/```json|```/g, '').trim()); if (fp.heading) fonts.heading = S.design.fonts.heading || fp.heading; if (fp.body) fonts.body = S.design.fonts.body || fp.body; if (fp.number) fonts.number = S.design.fonts.number || fp.number; } catch (e) {}
+    }
+    st.innerHTML = spin() + 'Writing narratives...';
+    const narrativePrompt = `You are a senior CRE broker at ${firm} writing a ${docLabel} for a ${S.propType} property.
+PROPERTY: ${prop.propName}, ${prop.propAddress}, ${prop.propCity}, ${prop.propState} ${prop.propZip}
+${prop.propSf ? fmtNum(prop.propSf) + ' SF' : ''} Built ${prop.propYear || 'N/A'}, Zoning: ${prop.propZoning || 'N/A'}
+Description: ${prop.propDesc || 'N/A'}
+Highlights: ${prop.propHighlights || 'N/A'}
+FINANCIALS: Price $${fmtNum(fin.price) || 'N/A'}, NOI $${fmtNum(fin.noi) || 'N/A'}, Cap ${fin.capRate || 'N/A'}%, Occupancy ${fin.occupancy || 'N/A'}%
+RENT ROLL: ${rentRoll.length ? JSON.stringify(rentRoll) : 'Not provided'}
 Return ONLY valid JSON:
-{"executiveSummary":"2-3 paragraphs leading with strongest financial fact","propertyDescription":"2-3 paragraphs with specific physical details","locationOverview":"2 paragraphs specific to ${prop.city} ${prop.state} market","investmentHighlights":["specific highlight with numbers","highlight 2","highlight 3","highlight 4","highlight 5"],"tenantSummary":"1-2 paragraphs on tenancy","valuationNarrative":"2 paragraphs with pricing rationale","financialHighlights":["key metric as bold fact","metric 2","metric 3"],"pullQuotes":["most compelling stat as short phrase","second fact","third fact"],"marketContext":"2 sentences on why ${prop.city} market supports this pricing"}`;
-    const nd=await callClaude({model:'claude-sonnet-4-6',max_tokens:5000,messages:[{role:'user',content:narrativePrompt}]});
-    try{ai=JSON.parse((nd.content?.[0]?.text||'{}').replace(/```json|```/g,'').trim());}catch(e){ai={};}
-  }catch(e){st.innerHTML=`<span style="color:#f5a623;">⚠ AI unavailable (${e.message}) — building from entered data.</span>`;await new Promise(r=>setTimeout(r,2000));}
+{"executiveSummary":"2-3 paragraphs","propertyDescription":"2-3 paragraphs","locationOverview":"2 paragraphs","investmentHighlights":["highlight 1","highlight 2","highlight 3","highlight 4","highlight 5"],"tenantSummary":"1-2 paragraphs","valuationNarrative":"2 paragraphs","pullQuotes":["stat 1","stat 2","stat 3"],"marketContext":"2 sentences"}`;
+    const nd = await callClaude({ model: 'claude-sonnet-4-6', max_tokens: 5000, messages: [{ role: 'user', content: narrativePrompt }] });
+    try { ai = JSON.parse((nd.content?.[0]?.text || '{}').replace(/```json|```/g, '').trim()); } catch (e) { ai = {}; }
+  } catch (e) {
+    st.innerHTML = `<span style="color:#f5a623;">⚠ AI unavailable (${e.message}) — building from entered data.</span>`;
+    await new Promise(r => setTimeout(r, 2000));
+  }
 
-  [fonts.heading,fonts.body,fonts.number].filter(Boolean).forEach(loadFont);
-  await new Promise(r=>setTimeout(r,800));
-  st.innerHTML=spin()+'Building document pages...';
-  await new Promise(r=>setTimeout(r,100));
+  [fonts.heading, fonts.body, fonts.number].filter(Boolean).forEach(loadFont);
+  await new Promise(r => setTimeout(r, 800));
+  st.innerHTML = spin() + 'Building document pages...';
+  await new Promise(r => setTimeout(r, 100));
 
-  const html=buildDocument(prop,fin,broker,rentRoll,ai,sections,disclaimer,docLabel,firm,city,fonts,selBrokers);
+  const html = buildDocument(prop, fin, broker, rentRoll, ai, sections, disclaimer, docLabel, firm, city, fonts, selBrokers);
   navigate('preview');
-  $('preview-title').textContent=`${prop.name} — ${docLabel}`;
-  $('preview-subtitle').textContent=`${prop.address}, ${prop.city}, ${prop.state} ${prop.zip}`;
-  $('document-preview-container').innerHTML=html;
+  $('preview-title').textContent = `${prop.propName || 'Document'} — ${docLabel}`;
+  $('preview-subtitle').textContent = `${prop.propAddress}, ${prop.propCity}, ${prop.propState} ${prop.propZip}`;
+  $('document-preview-container').innerHTML = html;
   injectPrintCSS();
-  st.style.display='none';
+  st.style.display = 'none';
 
-  const proj={id:Date.now(),docType:S.docType,propType:S.propType,name:prop.name,address:`${prop.address}, ${prop.city}, ${prop.state}`,price:fin.price,noi:fin.noi,capRate:fin.capRate,sf:prop.sf,createdAt:new Date().toLocaleDateString(),status:'complete'};
-  S.projects=[proj,...S.projects]; localStorage.setItem('cds_projects',JSON.stringify(S.projects));
+  const proj = { id: Date.now(), docType: S.docType, propType: S.propType, name: prop.propName || 'Untitled', address: `${prop.propAddress}, ${prop.propCity}, ${prop.propState}`, price: fin.price, noi: fin.noi, capRate: fin.capRate, sf: prop.propSf, createdAt: new Date().toLocaleDateString(), status: 'complete' };
+  S.projects = [proj, ...S.projects];
+  localStorage.setItem('cds_projects', JSON.stringify(S.projects));
   toast('Document ready — Print / Save as PDF to export');
 }
 
 function injectPrintCSS(){
-  const ex=$('print-css'); if(ex) ex.remove();
-  const s=document.createElement('style'); s.id='print-css';
-  s.textContent=`@media print{@page{size:${S.page.w}in ${S.page.h}in;margin:0;}.doc-page{width:${S.page.w}in!important;height:${S.page.h}in!important;min-height:${S.page.h}in!important;}}`;
+  const ex = $('print-css'); if (ex) ex.remove();
+  const s = document.createElement('style'); s.id = 'print-css';
+  // Handles both .doc-page divs (preset path) and iframes (template path)
+  s.textContent = `@media print{
+    @page{size:${S.page.w}in ${S.page.h}in;margin:0;}
+    .doc-page{width:${S.page.w}in!important;height:${S.page.h}in!important;min-height:${S.page.h}in!important;}
+    #document-preview-container iframe{width:${S.page.w}in!important;height:${S.page.h}in!important;page-break-after:always;}
+  }`;
   document.head.appendChild(s);
 }
 
@@ -1879,10 +1912,22 @@ function tsRenderRevPage() {
     <div class="footer"><span class="footer-text">Colliers International · Property Name · Offering Memorandum</span></div>
   </body></html>`;
 
-  const doc = frame.contentDocument || frame.contentWindow.document;
-  doc.open();
-  doc.write(TS.activePage === 0 ? coverHtml : interiorHtml);
-  doc.close();
+  // Show the actual generated HTML in the iframe
+  const frame = $('ts-replica-frame');
+  const pg = t.pages?.[TS.activePage];
+  if (pg?.html) {
+    const doc = frame.contentDocument || frame.contentWindow.document;
+    doc.open();
+    doc.write(pg.html);
+    doc.close();
+  } else {
+    const doc = frame.contentDocument || frame.contentWindow.document;
+    doc.open();
+    doc.write(`<html><body style="display:flex;align-items:center;justify-content:center;height:100%;font-family:Inter,sans-serif;color:#888;font-size:13px;margin:0;background:#f4f6fb;">
+      <div style="text-align:center;"><div style="font-size:24px;margin-bottom:8px;">⏳</div><div>HTML not yet generated for this page.</div></div>
+    </body></html>`);
+    doc.close();
+  }
 }
 
 function tsChangePage(dir) {
