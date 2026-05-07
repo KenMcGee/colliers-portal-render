@@ -355,10 +355,15 @@ Return ONLY the complete HTML document starting with <!DOCTYPE html> — no expl
             ],
           }],
         });
-        const html = (d.content?.[0]?.text || '').trim();
+        let html = (d.content?.[0]?.text || '').trim();
+        // Strip accidental markdown fences
+        html = html.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim();
+        if (!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) {
+          html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${html}</body></html>`;
+        }
         generatedPages.push({
           page: pg.page,
-          html: html.startsWith('<!DOCTYPE') ? html : `<!DOCTYPE html><html><body>${html}</body></html>`,
+          html,
           thumbnail: `data:image/jpeg;base64,${pg.base64}`,
           layout: null,
         });
@@ -368,40 +373,92 @@ Return ONLY the complete HTML document starting with <!DOCTYPE html> — no expl
       }
     }
   } else {
-    // Native PDF — all pages in one call
+    // Native PDF — generate pages one at a time to avoid JSON escaping issues
+    // First, ask Claude how many pages the document has and what type each is
+    let pageManifest = [];
     try {
-      const d = await claude({
+      const manifestD = await claude({
         model: 'claude-sonnet-4-6',
-        max_tokens: 8000,
+        max_tokens: 800,
         messages: [{
           role: 'user',
           content: [
             { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } },
             {
-              type: 'text', text: `This is a CRE document template. Reproduce each page as a separate complete HTML document.
-
-${PAGE_HTML_PROMPT('each', 'all')}
-
-Infer each page layout from the PDF content. Return a JSON array where each element has:
-- "page": page number (1-based)
-- "pageType": "cover"|"highlights"|"property"|"financial"|"location"|"rentroll"|"team"|"disclaimer"|"other"
-- "html": the complete HTML document string for that page
-
-Return ONLY valid JSON, no markdown.`,
+              type: 'text',
+              text: `How many pages does this document have, and what is the purpose of each page?
+Return ONLY valid JSON — no markdown:
+[
+  { "page": 1, "pageType": "cover", "description": "brief description" },
+  { "page": 2, "pageType": "highlights", "description": "brief description" }
+]
+pageType must be one of: cover, highlights, property, financial, location, rentroll, team, disclaimer, other`,
             },
           ],
         }],
       });
-      const raw = (d.content?.[0]?.text || '[]').replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(raw);
-      generatedPages = parsed.map(p => ({
-        page: p.page,
-        html: p.html,
-        thumbnail: null,
-        layout: { pageType: p.pageType },
-      }));
+      const raw = (manifestD.content?.[0]?.text || '[]').replace(/```json|```/g, '').trim();
+      pageManifest = JSON.parse(raw);
     } catch (e) {
-      return res.status(500).json({ error: 'HTML generation failed: ' + e.message });
+      console.log('Page manifest failed, defaulting to 6 pages:', e.message);
+      pageManifest = [
+        { page: 1, pageType: 'cover' },
+        { page: 2, pageType: 'highlights' },
+        { page: 3, pageType: 'property' },
+        { page: 4, pageType: 'financial' },
+        { page: 5, pageType: 'location' },
+        { page: 6, pageType: 'disclaimer' },
+      ];
+    }
+
+    // Cap at 10 pages to avoid runaway costs
+    pageManifest = pageManifest.slice(0, 10);
+
+    // Generate HTML for each page individually — no JSON wrapping, pure HTML output
+    for (const pg of pageManifest) {
+      try {
+        const d = await claude({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 4000,
+          messages: [{
+            role: 'user',
+            content: [
+              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } },
+              {
+                type: 'text',
+                text: `Focus only on page ${pg.page} of this document (the ${pg.pageType} page).
+
+${PAGE_HTML_PROMPT(pg.page, pageManifest.length)}
+
+Return ONLY the complete HTML document starting with <!DOCTYPE html> — no explanation, no markdown, no JSON wrapper.`,
+              },
+            ],
+          }],
+        });
+
+        let html = (d.content?.[0]?.text || '').trim();
+        // Strip any accidental markdown fences
+        html = html.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim();
+        if (!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) {
+          html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${html}</body></html>`;
+        }
+
+        generatedPages.push({
+          page: pg.page,
+          html,
+          thumbnail: null,
+          layout: { pageType: pg.pageType },
+        });
+      } catch (e) {
+        console.log(`Page ${pg.page} generation failed:`, e.message);
+        // Push a placeholder so page numbering stays correct
+        generatedPages.push({
+          page: pg.page,
+          html: `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#999;}</style></head><body><p>Page ${pg.page} could not be generated.</p></body></html>`,
+          thumbnail: null,
+          layout: { pageType: pg.pageType },
+        });
+      }
     }
   }
 
