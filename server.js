@@ -342,35 +342,41 @@ Return ONLY the complete HTML document starting with <!DOCTYPE html> — no expl
   if (!usedNativePdf && pageImages.length > 0) {
     for (let i = 0; i < pageImages.length; i++) {
       const pg = pageImages[i];
-      try {
-        const d = await claude({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'text', text: `Here is page ${pg.page} of the template:` },
-              { type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } },
-              { type: 'text', text: PAGE_HTML_PROMPT(pg.page, pageImages.length) },
-            ],
-          }],
-        });
-        let html = (d.content?.[0]?.text || '').trim();
-        // Strip accidental markdown fences
-        html = html.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim();
-        if (!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) {
-          html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${html}</body></html>`;
+      let html = null;
+      let attempts = 0;
+      while (attempts < 2 && !html) {
+        attempts++;
+        try {
+          const d = await claude({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'text', text: `Here is page ${pg.page} of the template:` },
+                { type: 'image', source: { type: 'base64', media_type: pg.mediaType, data: pg.base64 } },
+                { type: 'text', text: PAGE_HTML_PROMPT(pg.page, pageImages.length) },
+              ],
+            }],
+          });
+          let raw = (d.content?.[0]?.text || '').trim();
+          raw = raw.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim();
+          if (!raw.startsWith('<!DOCTYPE') && !raw.startsWith('<html')) {
+            raw = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${raw}</body></html>`;
+          }
+          html = raw;
+          console.log(`Page ${pg.page} generated OK (${html.length} chars)`);
+        } catch (e) {
+          console.log(`Page ${pg.page} attempt ${attempts} failed: ${e.message}`);
+          if (attempts < 2) await new Promise(r => setTimeout(r, 2000));
         }
-        generatedPages.push({
-          page: pg.page,
-          html,
-          thumbnail: `data:image/jpeg;base64,${pg.base64}`,
-          layout: null,
-        });
-      } catch (e) {
-        console.log(`Page ${pg.page} HTML generation failed:`, e.message);
-        generatedPages.push({ page: pg.page, html: null, thumbnail: `data:image/jpeg;base64,${pg.base64}`, layout: null });
       }
+      generatedPages.push({
+        page: pg.page,
+        html: html || null,
+        thumbnail: `data:image/jpeg;base64,${pg.base64}`,
+        layout: null,
+      });
     }
   } else {
     // Native PDF — generate pages one at a time to avoid JSON escaping issues
@@ -416,25 +422,48 @@ pageType must be one of: cover, highlights, property, financial, location, rentr
 
     // Generate HTML for each page individually — no JSON wrapping, pure HTML output
     for (const pg of pageManifest) {
-      try {
-        const d = await claude({
-          model: 'claude-sonnet-4-6',
-          max_tokens: 4000,
-          messages: [{
-            role: 'user',
-            content: [
-              { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } },
-              {
-                type: 'text',
-                text: `Focus only on page ${pg.page} of this document (the ${pg.pageType} page).
+      let html = null;
+      let attempts = 0;
+      while (attempts < 2 && !html) {
+        attempts++;
+        try {
+          const d = await claude({
+            model: 'claude-sonnet-4-6',
+            max_tokens: 4000,
+            messages: [{
+              role: 'user',
+              content: [
+                { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64(req.file.buffer) } },
+                {
+                  type: 'text',
+                  text: `Focus only on page ${pg.page} of this document (the ${pg.pageType} page).
 
 ${PAGE_HTML_PROMPT(pg.page, pageManifest.length)}
 
 Return ONLY the complete HTML document starting with <!DOCTYPE html> — no explanation, no markdown, no JSON wrapper.`,
-              },
-            ],
-          }],
-        });
+                },
+              ],
+            }],
+          });
+          let raw = (d.content?.[0]?.text || '').trim();
+          raw = raw.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim();
+          if (!raw.startsWith('<!DOCTYPE') && !raw.startsWith('<html')) {
+            raw = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${raw}</body></html>`;
+          }
+          html = raw;
+          console.log(`Page ${pg.page} (${pg.pageType}) generated OK (${html.length} chars)`);
+        } catch (e) {
+          console.log(`Page ${pg.page} attempt ${attempts} failed: ${e.message}`);
+          if (attempts < 2) await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      generatedPages.push({
+        page: pg.page,
+        html: html || null,
+        thumbnail: null,
+        layout: { pageType: pg.pageType },
+      });
+    }
 
         let html = (d.content?.[0]?.text || '').trim();
         // Strip any accidental markdown fences
