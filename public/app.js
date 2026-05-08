@@ -833,7 +833,8 @@ async function runImport() {
   fd.append('tags', JSON.stringify(tags));
 
   try {
-    st.innerHTML = spin() + 'Claude Vision is analyzing every page — this takes 30–90 seconds...';
+    const pageCountEstimate = TS.importFile.size > 2 * 1024 * 1024 ? '5–10 minutes' : '2–4 minutes';
+    st.innerHTML = spin() + `Analyzing template — Claude is generating HTML for each page individually. This takes ${pageCountEstimate} for a full document. Please keep this window open...`;
     const r = await fetch('/api/templates/analyze', { method: 'POST', body: fd });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'Analysis failed');
