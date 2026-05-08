@@ -459,13 +459,20 @@ async function generateDocument(){
       $('preview-subtitle').textContent = `${prop.propAddress}, ${prop.propCity}, ${prop.propState}`;
 
       const container = $('document-preview-container');
-      container.innerHTML = d.pages
+      container.innerHTML = '';
+      d.pages
         .filter(p => p.html)
-        .map(p => {
-          const escaped = p.html.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-          return `<iframe srcdoc="${escaped}" style="width:${S.page.w}in;height:${S.page.h}in;border:none;display:block;box-shadow:0 4px 24px rgba(0,0,0,0.12);border-radius:3px;background:#fff;flex-shrink:0;" scrolling="no"></iframe>`;
-        })
-        .join('');
+        .forEach(p => {
+          const iframe = document.createElement('iframe');
+          iframe.style.cssText = `width:${S.page.w}in;height:${S.page.h}in;border:none;display:block;box-shadow:0 4px 24px rgba(0,0,0,0.12);border-radius:3px;background:#fff;flex-shrink:0;`;
+          iframe.scrolling = 'no';
+          container.appendChild(iframe);
+          // Write directly to the iframe document — no srcdoc escaping issues
+          const doc = iframe.contentDocument || iframe.contentWindow.document;
+          doc.open();
+          doc.write(p.html);
+          doc.close();
+        });
 
       injectPrintCSS();
       st.style.display = 'none';
@@ -634,19 +641,25 @@ function tsRenderRevPage() {
     origViewer.innerHTML = `<div style="width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:var(--text-muted);font-size:12px;padding:12px;text-align:center;"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg><span>Page thumbnail unavailable — PDF analyzed natively.</span></div>`;
   }
 
-  // Replica — show actual generated HTML
+ // Replica — show actual generated HTML
   const frame = $('ts-replica-frame');
+  const doc = frame.contentDocument || frame.contentWindow.document;
+  doc.open();
   if (pg?.html) {
-    const doc = frame.contentDocument || frame.contentWindow.document;
-    doc.open();
     doc.write(pg.html);
-    doc.close();
   } else {
-    const doc = frame.contentDocument || frame.contentWindow.document;
-    doc.open();
-    doc.write(`<html><body style="display:flex;align-items:center;justify-content:center;height:100%;font-family:Inter,sans-serif;color:#888;font-size:13px;margin:0;background:#f4f6fb;"><div style="text-align:center;"><div style="font-size:24px;margin-bottom:8px;">⏳</div><div>HTML not yet generated for this page.</div></div></body></html>`);
-    doc.close();
+    doc.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"><style>
+      body{display:flex;align-items:center;justify-content:center;height:100vh;
+      font-family:Inter,sans-serif;color:#aaa;font-size:13px;margin:0;background:#f8f9fb;
+      flex-direction:column;gap:10px;}
+      .icon{font-size:28px;}
+    </style></head><body>
+      <div class="icon">⚠️</div>
+      <div>Page ${TS.activePage + 1} was not generated.</div>
+      <div style="font-size:11px;color:#ccc;">Re-import the template to retry.</div>
+    </body></html>`);
   }
+  doc.close();
 }
 
 function tsChangePage(dir) {
