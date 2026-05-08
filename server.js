@@ -464,18 +464,7 @@ Return ONLY the complete HTML document starting with <!DOCTYPE html> — no expl
         thumbnail: null,
         layout: { pageType: pg.pageType },
       });
-    } catch (e) {
-        console.log(`Page ${pg.page} generation failed:`, e.message);
-        // Push a placeholder so page numbering stays correct
-        generatedPages.push({
-          page: pg.page,
-          html: `<!DOCTYPE html><html><head><meta charset="UTF-8"><style>body{display:flex;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;color:#999;}</style></head><body><p>Page ${pg.page} could not be generated.</p></body></html>`,
-          thumbnail: null,
-          layout: { pageType: pg.pageType },
-        });
-      }
-    }
-  }
+    } 
 
   // ── Pass 3: Build field map ──────────────────────────────────
   const allHtml = generatedPages.map(p => p.html || '').join('\n');
