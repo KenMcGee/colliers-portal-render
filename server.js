@@ -464,7 +464,7 @@ Return ONLY the complete HTML document starting with <!DOCTYPE html> — no expl
         thumbnail: null,
         layout: { pageType: pg.pageType },
       });
-    }
+    } }
 
         let html = (d.content?.[0]?.text || '').trim();
         // Strip any accidental markdown fences
