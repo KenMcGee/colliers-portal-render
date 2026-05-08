@@ -188,6 +188,7 @@ app.delete('/api/templates/:id', (req, res) => {
 // so Express does not match "analyze" as an :id param.
 app.post('/api/templates/analyze', upload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file' });
+  req.socket.setTimeout(600000); // 10 min timeout for multi-page analysis
 
   const name = req.body.name || req.file.originalname.replace(/\.pdf$/i, '');
   const tags = req.body.tags ? JSON.parse(req.body.tags) : [];
