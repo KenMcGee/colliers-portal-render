@@ -464,22 +464,7 @@ Return ONLY the complete HTML document starting with <!DOCTYPE html> — no expl
         thumbnail: null,
         layout: { pageType: pg.pageType },
       });
-    } }
-
-        let html = (d.content?.[0]?.text || '').trim();
-        // Strip any accidental markdown fences
-        html = html.replace(/^```html?\s*/i, '').replace(/```\s*$/i, '').trim();
-        if (!html.startsWith('<!DOCTYPE') && !html.startsWith('<html')) {
-          html = `<!DOCTYPE html><html><head><meta charset="UTF-8"></head><body>${html}</body></html>`;
-        }
-
-        generatedPages.push({
-          page: pg.page,
-          html,
-          thumbnail: null,
-          layout: { pageType: pg.pageType },
-        });
-      } catch (e) {
+    } catch (e) {
         console.log(`Page ${pg.page} generation failed:`, e.message);
         // Push a placeholder so page numbering stays correct
         generatedPages.push({
